@@ -4,7 +4,7 @@ A powerful Rust-based data science agent with a Terminal User Interface (TUI) fo
 
 ## Features
 
-- **Data Loading**: Support for CSV and JSON file formats using Polars
+- **Data Loading**: Support for CSV, JSON, and Excel (.xlsx) file formats using Polars
 - **Statistical Analysis**:
   - Summary statistics (mean, std dev, min, max, count)
   - Correlation matrices
@@ -36,10 +36,10 @@ cargo run
 **General:**
 - `Tab` - Switch between tabs (Data, Analysis, Visualizations, AI)
 - `q` - Quit application
-- `h` - Toggle help screen
+- `?` or `h` - Toggle help screen
 
 **Data Tab:**
-- `l` - Load CSV or JSON file
+- `L` - Load file (CSV, JSON, or Excel .xlsx)
 
 **Analysis Tab:**
 - `s` - Compute summary statistics
@@ -53,6 +53,7 @@ cargo run
 
 **AI Tab:**
 - Type message and press `Enter` to send
+- Type `/help` to open the help screen
 - `Esc` - Exit input mode
 
 ## Configuration
@@ -127,7 +128,7 @@ src/
 
 1. Load a dataset:
    ```
-   Data tab → Press 'l' → Enter file path
+   Data tab → Press 'L' → Enter file path (supports .csv, .json, .xlsx)
    ```
 
 2. Analyze the data:

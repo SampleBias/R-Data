@@ -1,10 +1,56 @@
 use anyhow::{Context, Result};
+use calamine::{DataType as CalamineDataType, Reader, open_workbook, Data, Xlsx};
 use polars::prelude::*;
 use std::path::Path;
 
 pub struct DataLoader;
 
 impl DataLoader {
+    pub fn load_xlsx<P: AsRef<Path>>(path: P) -> Result<DataFrame> {
+        let path = path.as_ref();
+        let mut workbook: Xlsx<_> = open_workbook(path).context("Failed to open Excel file")?;
+        let sheet_names = workbook.sheet_names().to_vec();
+        let sheet_name = sheet_names.first().ok_or_else(|| anyhow::anyhow!("No sheets in Excel file"))?;
+        let range = workbook.worksheet_range(sheet_name).context("Failed to read worksheet")?;
+
+        let rows: Vec<Vec<Data>> = range.rows().map(|r| r.to_vec()).collect();
+        if rows.is_empty() {
+            return Err(anyhow::anyhow!("Excel sheet is empty"));
+        }
+
+        let headers: Vec<String> = rows[0]
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                d.as_string()
+                    .unwrap_or_else(|| format!("Column_{}", i + 1))
+            })
+            .collect();
+
+        let num_cols = headers.len();
+        let mut columns: Vec<Series> = Vec::with_capacity(num_cols);
+
+        for col_idx in 0..num_cols {
+            let mut str_values: Vec<Option<String>> = Vec::new();
+            for row in rows.iter().skip(1) {
+                let cell = row.get(col_idx).unwrap_or(&Data::Empty);
+                str_values.push(cell.as_string());
+            }
+            let series = Series::new(
+                headers[col_idx].as_str().into(),
+                str_values
+                    .into_iter()
+                    .map(|o| o.unwrap_or_default())
+                    .collect::<Vec<_>>(),
+            );
+            columns.push(series);
+        }
+
+        let cols: Vec<_> = columns.into_iter().map(|s| s.into_column()).collect();
+        let df = DataFrame::new(cols).context("Failed to build DataFrame from Excel")?;
+        Ok(df)
+    }
+
     pub fn load_csv<P: AsRef<Path>>(path: P) -> Result<DataFrame> {
         let df = CsvReadOptions::default()
             .with_has_header(true)
@@ -34,7 +80,11 @@ impl DataLoader {
         match extension.to_lowercase().as_str() {
             "csv" => Self::load_csv(path),
             "json" => Self::load_json(path),
-            _ => Err(anyhow::anyhow!("Unsupported file format: {}", extension)),
+            "xlsx" => Self::load_xlsx(path),
+            _ => Err(anyhow::anyhow!(
+                "Unsupported file format: {}. Supported: .csv, .json, .xlsx",
+                extension
+            )),
         }
     }
 

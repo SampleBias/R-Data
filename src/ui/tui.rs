@@ -97,7 +97,7 @@ impl App {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .margin(0)
-                .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
+                .constraints([Constraint::Length(5), Constraint::Min(0)].as_ref())
                 .split(f.area());
 
             self.tabs.render_tabs(chunks[0], f.buffer_mut());
@@ -118,35 +118,78 @@ impl App {
     }
 
     fn render_data_tab(&self, f: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(10), Constraint::Min(0)].as_ref())
-            .split(area);
-
-        Paragraph::new(self.tabs.data.file_path.clone())
-            .block(Block::default().borders(Borders::ALL).title(" File Path "))
-            .wrap(Wrap { trim: false })
-            .render(chunks[0], f.buffer_mut());
-
-        let info_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(10), Constraint::Min(0)].as_ref())
-            .split(chunks[1]);
-
-        Paragraph::new(self.tabs.data.dataframe_info.clone())
-            .block(Block::default().borders(Borders::ALL).title(" DataFrame Info "))
-            .wrap(Wrap { trim: false })
-            .render(info_chunks[0], f.buffer_mut());
-
-        Paragraph::new(self.tabs.data.preview_data.clone())
-            .block(Block::default().borders(Borders::ALL).title(" Preview "))
-            .wrap(Wrap { trim: false })
-            .render(info_chunks[1], f.buffer_mut());
-
         if matches!(self.file_dialog_state, FileDialogState::AwaitingPath) {
-            Paragraph::new("Enter file path: /path/to/file.csv\nPress Enter to load, Esc to cancel")
+            let load_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(5), Constraint::Length(5), Constraint::Min(0)].as_ref())
+                .split(area);
+
+            let instructions = vec![
+                "LOAD FILE — Enter the full path to your data file",
+                "",
+                "Supported formats: .csv  .json  .xlsx (Excel)",
+                "",
+                "Examples:",
+                "  ./data/sales.csv",
+                "  /Users/you/data/report.xlsx",
+                "  ~/Downloads/export.json",
+                "",
+                "Press Enter to load • Esc to cancel",
+            ];
+            Paragraph::new(instructions.join("\n"))
                 .block(Block::default().borders(Borders::ALL).title(" Load File "))
-                .render(Rect::new(area.x + 10, area.y + 10, 60, 3), f.buffer_mut());
+                .wrap(Wrap { trim: false })
+                .render(load_chunks[0], f.buffer_mut());
+
+            let path_display = if self.tabs.data.file_path_input.is_empty() {
+                "_".to_string()
+            } else {
+                self.tabs.data.file_path_input.clone()
+            };
+            Paragraph::new(path_display)
+                .block(Block::default().borders(Borders::ALL).title(" Path (type here) "))
+                .render(load_chunks[1], f.buffer_mut());
+
+            Paragraph::new(self.tabs.data.preview_data.clone())
+                .block(Block::default().borders(Borders::ALL).title(" Preview "))
+                .wrap(Wrap { trim: false })
+                .render(load_chunks[2], f.buffer_mut());
+        } else {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(4), Constraint::Length(10), Constraint::Min(0)].as_ref())
+                .split(area);
+
+            let load_hint = "Press L to load a file (CSV, JSON, or Excel .xlsx)";
+            Paragraph::new(load_hint)
+                .block(Block::default().borders(Borders::ALL).title(" Load File "))
+                .render(chunks[0], f.buffer_mut());
+
+            Paragraph::new(
+                if self.tabs.data.file_path.is_empty() {
+                    "No file loaded yet.".to_string()
+                } else {
+                    self.tabs.data.file_path.clone()
+                },
+            )
+                .block(Block::default().borders(Borders::ALL).title(" Current File "))
+                .wrap(Wrap { trim: false })
+                .render(chunks[1], f.buffer_mut());
+
+            let info_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(10), Constraint::Min(0)].as_ref())
+                .split(chunks[2]);
+
+            Paragraph::new(self.tabs.data.dataframe_info.clone())
+                .block(Block::default().borders(Borders::ALL).title(" DataFrame Info "))
+                .wrap(Wrap { trim: false })
+                .render(info_chunks[0], f.buffer_mut());
+
+            Paragraph::new(self.tabs.data.preview_data.clone())
+                .block(Block::default().borders(Borders::ALL).title(" Preview "))
+                .wrap(Wrap { trim: false })
+                .render(info_chunks[1], f.buffer_mut());
         }
     }
 
@@ -223,7 +266,9 @@ impl App {
             return Ok(());
         }
 
-        if key.code == KeyCode::Char('h') && self.input_mode == InputMode::Normal {
+        if (key.code == KeyCode::Char('h') || key.code == KeyCode::Char('?'))
+            && self.input_mode == InputMode::Normal
+        {
             self.tabs.show_help = !self.tabs.show_help;
             return Ok(());
         }
@@ -247,23 +292,26 @@ impl App {
                 if self.input_mode == InputMode::Editing {
                     self.input_mode = InputMode::Normal;
                     self.file_dialog_state = FileDialogState::None;
+                    self.tabs.data.file_path_input.clear();
                     self.tabs.ai.input = tui_textarea::TextArea::default();
                 }
             }
-            KeyCode::Char('l') if self.tabs.active == Tab::Data && self.input_mode == InputMode::Normal => {
+            KeyCode::Char('l') | KeyCode::Char('L') if self.tabs.active == Tab::Data && self.input_mode == InputMode::Normal => {
                 self.input_mode = InputMode::Editing;
                 self.file_dialog_state = FileDialogState::AwaitingPath;
+                self.tabs.data.file_path_input.clear();
             }
             KeyCode::Enter if matches!(self.file_dialog_state, FileDialogState::AwaitingPath) => {
-                let input = self.tabs.ai.input.lines().join("\n");
-                if !input.trim().is_empty() {
-                    if let Ok(df) = DataLoader::load_dataframe(&input) {
+                let path = self.tabs.data.file_path_input.trim().to_string();
+                if !path.is_empty() {
+                    let expanded = shellexpand::tilde(&path).to_string();
+                    if let Ok(df) = DataLoader::load_dataframe(&expanded) {
                         let info = DataLoader::get_column_info(&df);
                         let preview = format!("{:.5}", df.head(Some(10)));
                         
                         self.dataframe = Some(df);
                         self.column_info = info;
-                        self.tabs.data.file_path = input.clone();
+                        self.tabs.data.file_path = expanded.clone();
                         self.tabs.data.dataframe_info = self.column_info.iter()
                             .map(|c| format!("{}: {} (nulls: {})", c.name, c.dtype, c.null_count))
                             .collect::<Vec<_>>()
@@ -273,7 +321,13 @@ impl App {
                 }
                 self.input_mode = InputMode::Normal;
                 self.file_dialog_state = FileDialogState::None;
-                self.tabs.ai.input = tui_textarea::TextArea::default();
+                self.tabs.data.file_path_input.clear();
+            }
+            KeyCode::Char(c) if self.input_mode == InputMode::Editing && matches!(self.file_dialog_state, FileDialogState::AwaitingPath) => {
+                self.tabs.data.file_path_input.push(c);
+            }
+            KeyCode::Backspace if self.input_mode == InputMode::Editing && matches!(self.file_dialog_state, FileDialogState::AwaitingPath) => {
+                self.tabs.data.file_path_input.pop();
             }
             KeyCode::Char(c) if self.input_mode == InputMode::Editing => {
                 self.tabs.ai.input.insert_char(c);
@@ -288,11 +342,17 @@ impl App {
                 self.input_mode = InputMode::Editing;
             }
             KeyCode::Enter if self.tabs.active == Tab::AI && self.input_mode == InputMode::Editing => {
-                let prompt = self.tabs.ai.input.lines().join("\n");
-                if !prompt.trim().is_empty() {
-                    self.tabs.ai.conversation.push(format!("You: {}", prompt));
-                    self.tabs.ai.input = tui_textarea::TextArea::default();
-                    self.input_mode = InputMode::Normal;
+                let prompt = self.tabs.ai.input.lines().join("\n").trim().to_string();
+                if !prompt.is_empty() {
+                    if prompt == "/help" || prompt.to_lowercase() == "help" {
+                        self.tabs.show_help = true;
+                        self.tabs.ai.input = tui_textarea::TextArea::default();
+                        self.input_mode = InputMode::Normal;
+                    } else {
+                        self.tabs.ai.conversation.push(format!("You: {}", prompt));
+                        self.tabs.ai.input = tui_textarea::TextArea::default();
+                        self.input_mode = InputMode::Normal;
+                    }
                 }
             }
             _ => {}
