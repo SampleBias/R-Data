@@ -209,7 +209,7 @@ impl AppTabs {
             "  ────────────────────────────────────────",
             "    s                 Summary statistics",
             "    c                 Correlation matrix",
-            "    h                 Histogram",
+            "    i                 Histogram",
             "    b                 Box plot",
             "    r                 Expression vs age (microarray) or linear regression",
             "    g                 Genes significant with age, p<0.05 (microarray)",

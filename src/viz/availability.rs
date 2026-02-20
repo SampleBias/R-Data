@@ -56,7 +56,7 @@ pub fn available_visualizations(
             },
         },
         VizAvailability {
-            key: 'h',
+            key: 'i',
             label: "Histogram".to_string(),
             available: numeric_count >= 1,
             reason: if numeric_count < 1 {

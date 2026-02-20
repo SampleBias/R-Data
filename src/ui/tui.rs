@@ -638,7 +638,7 @@ impl App {
                             }
                         }
                     }
-                    'h' if avail.map(|v| v.available).unwrap_or(false) => {
+                    'i' if avail.map(|v| v.available).unwrap_or(false) => {
                         if let Some(df) = &self.dataframe {
                             if let Some(col) = df.get_columns().iter()
                                 .find(|c| c.dtype().is_numeric())
