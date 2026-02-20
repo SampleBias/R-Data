@@ -52,10 +52,20 @@ impl Default for DataTab {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnalysisStatus {
+    Idle,
+    PendingConfirm { request: String },
+    Loading,
+    Success(String),
+    Error(String),
+}
+
 #[allow(dead_code)]
 pub struct AnalysisTab {
     pub results: Vec<String>,
     pub selected_result: usize,
+    pub analysis_status: AnalysisStatus,
 }
 
 impl Default for AnalysisTab {
@@ -63,6 +73,7 @@ impl Default for AnalysisTab {
         Self {
             results: Vec::new(),
             selected_result: 0,
+            analysis_status: AnalysisStatus::Idle,
         }
     }
 }
@@ -217,11 +228,13 @@ impl AppTabs {
             "",
             "  ANALYSIS TAB — Run statistical analyses",
             "  ────────────────────────────────────────",
-            "    s                 Summary statistics",
+            "    s                 Summary statistics (confirm with Enter)",
             "    c                 Correlation matrix",
-            "    r                 Linear regression",
-            "    b                 Box plot",
-            "    i                 Histogram",
+            "    r                 Linear regression (first 2 numeric cols)",
+            "    b                 Box plot (first numeric column)",
+            "    i                 Histogram (first numeric column)",
+            "    Enter             Confirm and run selected analysis",
+            "    Esc               Cancel pending analysis",
             "",
             "  VISUALIZATIONS TAB — View charts",
             "  ─────────────────────────────────────",

@@ -15,7 +15,7 @@ use crate::{
     viz::{VisualizationEngine},
     config::ConfigManager,
 };
-use super::components::{AppTabs, LoadStatus, Tab};
+use super::components::{AnalysisStatus, AppTabs, LoadStatus, Tab};
 
 pub struct App {
     tabs: AppTabs,
@@ -26,6 +26,7 @@ pub struct App {
     should_quit: bool,
     input_mode: InputMode,
     file_dialog_state: FileDialogState,
+    pending_analysis: Option<AnalysisRequest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +63,7 @@ impl App {
             should_quit: false,
             input_mode: InputMode::Normal,
             file_dialog_state: FileDialogState::None,
+            pending_analysis: None,
         })
     }
 
@@ -80,6 +82,40 @@ impl App {
                     self.handle_app_event(event).await?;
                 }
                 Err(_) => {}
+            }
+
+            if matches!(self.tabs.analysis.analysis_status, AnalysisStatus::Loading)
+                && self.pending_analysis.is_some()
+            {
+                let request = self.pending_analysis.take().unwrap();
+                if let Some(df) = &self.dataframe {
+                    match self.agent.analyze_request(df, request).await {
+                        Ok(result) => {
+                            let output = format!(
+                                "{}\n\n{}",
+                                result.summary,
+                                result.details.as_deref().unwrap_or("No details")
+                            );
+                            self.tabs.analysis.results.push(output);
+                            self.tabs.analysis.analysis_status =
+                                AnalysisStatus::Success("Analysis completed".to_string());
+                            if let Some(viz_config) = result.viz_config {
+                                if let Ok(viz_data) = self.viz_engine.render(df, &viz_config) {
+                                    self.tabs.viz.viz_output = viz_data.svg_output;
+                                    self.tabs.viz.viz_title = viz_data.title;
+                                    self.tabs.viz.show_viz = true;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.tabs.analysis.analysis_status =
+                                AnalysisStatus::Error(e.to_string());
+                        }
+                    }
+                } else {
+                    self.tabs.analysis.analysis_status =
+                        AnalysisStatus::Error("No data loaded".to_string());
+                }
             }
 
             if event::poll(Duration::from_millis(100))? {
@@ -204,11 +240,41 @@ impl App {
     }
 
     fn render_analysis_tab(&self, f: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(4), Constraint::Min(0)].as_ref())
+            .split(area);
+
+        let (status_text, status_style) = match &self.tabs.analysis.analysis_status {
+            AnalysisStatus::Idle => ("Ready".to_string(), Style::default().fg(Color::DarkGray)),
+            AnalysisStatus::PendingConfirm { request } => (
+                format!("▶ {} — Press Enter to run, Esc to cancel", request),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+            AnalysisStatus::Loading => (
+                "⏳ Running analysis...".to_string(),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+            AnalysisStatus::Success(msg) => (
+                format!("✓ {}  (press any key to dismiss)", msg),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ),
+            AnalysisStatus::Error(msg) => (
+                format!("✗ {}  (press any key to dismiss)", msg),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+        };
+        Paragraph::new(status_text)
+            .style(status_style)
+            .block(Block::default().borders(Borders::ALL).title(" Status "))
+            .wrap(Wrap { trim: false })
+            .render(chunks[0], f.buffer_mut());
+
         if self.tabs.analysis.results.is_empty() {
             Paragraph::new("No analysis results yet.\n\nPress keys to run analyses:\n  s - Summary statistics\n  c - Correlation matrix\n  r - Linear regression\n  b - Box plot\n  i - Histogram")
                 .block(Block::default().borders(Borders::ALL).title(" Results "))
                 .wrap(Wrap { trim: false })
-                .render(area, f.buffer_mut());
+                .render(chunks[1], f.buffer_mut());
         } else {
             let items: Vec<ListItem> = self.tabs.analysis
                 .results
@@ -219,7 +285,7 @@ impl App {
             let list = List::new(items)
                 .block(Block::default().borders(Borders::ALL).title(" Results "));
 
-            Widget::render(list, area, f.buffer_mut());
+            Widget::render(list, chunks[1], f.buffer_mut());
         }
     }
 
@@ -304,6 +370,11 @@ impl App {
                     self.file_dialog_state = FileDialogState::None;
                     self.tabs.data.file_path_input.clear();
                     self.tabs.ai.input = tui_textarea::TextArea::default();
+                } else if self.tabs.active == Tab::Analysis
+                    && matches!(self.tabs.analysis.analysis_status, AnalysisStatus::PendingConfirm { .. })
+                {
+                    self.tabs.analysis.analysis_status = AnalysisStatus::Idle;
+                    self.pending_analysis = None;
                 }
             }
             KeyCode::Char('l') | KeyCode::Char('L') if self.tabs.active == Tab::Data && self.input_mode == InputMode::Normal => {
@@ -360,6 +431,77 @@ impl App {
             }
             KeyCode::Char(' ') if self.tabs.active == Tab::Visualizations && self.input_mode == InputMode::Normal => {
                 self.tabs.viz.show_viz = !self.tabs.viz.show_viz;
+            }
+            KeyCode::Enter if self.tabs.active == Tab::Analysis
+                && matches!(self.tabs.analysis.analysis_status, AnalysisStatus::PendingConfirm { .. })
+            => {
+                self.tabs.analysis.analysis_status = AnalysisStatus::Loading;
+            }
+            KeyCode::Char('s') if self.tabs.active == Tab::Analysis && self.input_mode == InputMode::Normal => {
+                if self.dataframe.is_some() {
+                    self.pending_analysis = Some(AnalysisRequest::SummaryStats);
+                    self.tabs.analysis.analysis_status =
+                        AnalysisStatus::PendingConfirm { request: "Summary statistics".to_string() };
+                }
+            }
+            KeyCode::Char('c') if self.tabs.active == Tab::Analysis && self.input_mode == InputMode::Normal => {
+                if self.dataframe.is_some() {
+                    self.pending_analysis = Some(AnalysisRequest::Correlation);
+                    self.tabs.analysis.analysis_status =
+                        AnalysisStatus::PendingConfirm { request: "Correlation matrix".to_string() };
+                }
+            }
+            KeyCode::Char('r') if self.tabs.active == Tab::Analysis && self.input_mode == InputMode::Normal => {
+                if let Some(df) = &self.dataframe {
+                    let numeric_cols: Vec<String> = df.get_columns()
+                        .iter()
+                        .filter(|c| c.dtype().is_numeric())
+                        .map(|c| c.name().to_string())
+                        .collect();
+                    if numeric_cols.len() >= 2 {
+                        let x = numeric_cols[0].clone();
+                        let y = numeric_cols[1].clone();
+                        self.pending_analysis = Some(AnalysisRequest::LinearRegression {
+                            x_column: x.clone(),
+                            y_column: y.clone(),
+                        });
+                        self.tabs.analysis.analysis_status =
+                            AnalysisStatus::PendingConfirm { request: format!("Linear regression: {} vs {}", x, y) };
+                    }
+                }
+            }
+            KeyCode::Char('b') if self.tabs.active == Tab::Analysis && self.input_mode == InputMode::Normal => {
+                if let Some(df) = &self.dataframe {
+                    if let Some(col) = df.get_columns().iter()
+                        .find(|c| c.dtype().is_numeric())
+                        .map(|c| c.name().to_string())
+                    {
+                        self.pending_analysis = Some(AnalysisRequest::BoxPlot { column: col.clone() });
+                        self.tabs.analysis.analysis_status =
+                            AnalysisStatus::PendingConfirm { request: format!("Box plot: {}", col) };
+                    }
+                }
+            }
+            KeyCode::Char('i') if self.tabs.active == Tab::Analysis && self.input_mode == InputMode::Normal => {
+                if let Some(df) = &self.dataframe {
+                    if let Some(col) = df.get_columns().iter()
+                        .find(|c| c.dtype().is_numeric())
+                        .map(|c| c.name().to_string())
+                    {
+                        let bins = ConfigManager::load_config().map(|c| c.default_bins).unwrap_or(20);
+                        self.pending_analysis = Some(AnalysisRequest::Histogram {
+                            column: col.clone(),
+                            bins,
+                        });
+                        self.tabs.analysis.analysis_status =
+                            AnalysisStatus::PendingConfirm { request: format!("Histogram: {} ({} bins)", col, bins) };
+                    }
+                }
+            }
+            _ if self.tabs.active == Tab::Analysis && self.input_mode == InputMode::Normal => {
+                if matches!(self.tabs.analysis.analysis_status, AnalysisStatus::Success(_) | AnalysisStatus::Error(_)) {
+                    self.tabs.analysis.analysis_status = AnalysisStatus::Idle;
+                }
             }
             _ if self.tabs.active == Tab::Data && self.input_mode == InputMode::Normal => {
                 if matches!(self.tabs.data.load_status, LoadStatus::Success(_) | LoadStatus::Error(_)) {
