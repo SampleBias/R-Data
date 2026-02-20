@@ -1,31 +1,41 @@
-# R-Data Agent
+# R-Data Agent — Longevity Gene Expression
 
-A powerful Rust-based data science agent with a Terminal User Interface (TUI) for statistical analysis and visualization.
+A Rust-based TUI tool for analyzing gene expression microarray data, focused on longevity research and aging markers (expression changes from young → old).
 
 ## Features
 
-- **Data Loading**: Support for CSV, JSON, and Excel (.xlsx) file formats using Polars
+- **Microarray Data Layout**: Automatic detection of Gene ID (column A) × age (columns B+). Supports replicates (same age in multiple columns).
+- **Data Loading**: CSV, JSON, and Excel (.xlsx) via Polars.
 - **Statistical Analysis**:
-  - Summary statistics (mean, std dev, min, max, count)
-  - Correlation matrices
+  - Summary statistics (mean, std dev, min, max)
+  - Correlation matrix
   - Linear regression
-  - Box plots
-  - Histograms
-- **Visualizations**: ggplot2-style charts (light gray bg, steel blue/coral palette). Press **O** to open full-quality SVG in browser
-  - Linear regression plots
-  - Box plots
-  - Histograms
-  - Correlation heatmaps
-- **AI-Powered Insights**: Integration with Z.ai GLM 4.7 for intelligent data analysis
-- **TUI Interface**: Modern terminal interface built with Ratatui
+  - Histogram, box plot
+- **Gene-Expression Visualizations**:
+  - **Expression trend**: Line plot of expression vs age for selected gene(s)
+  - **Young vs Old scatter**: Mean expression Young vs Old across genes (identifies aging markers)
+  - **Age group box plot**: Box plot by age category
+- **General Visualizations**: Correlation heatmap, histograms, box plots, linear regression.
+- **Visualization Availability**: All analyses listed in UI; disabled with reason when data doesn't fit (e.g. "no numeric columns").
+
+## Data Format
+
+Expected microarray layout:
+
+| Gene ID    | 17   | 18   | 21   | 24   | ... |
+|------------|------|------|------|------|-----|
+| ENSG0000001| 6.55 | 6.72 | 7.10 | ... |     |
+| ENSG000001 | 8.12 | 8.81 | 8.81 | ... |     |
+
+- **Row 1**: `Gene ID` in column A, ages (17, 18, 21, 24, …) as column headers.
+- **Column A**: Ensembl gene IDs (e.g. `ENSG0000001`).
+- **Columns B+**: Expression values (float) per gene at each age.
+- Same age may appear in multiple columns (replicates).
 
 ## Installation
 
 ```bash
-# Build from source
 cargo build --release
-
-# Run
 cargo run
 ```
 
@@ -34,126 +44,64 @@ cargo run
 ### Keyboard Controls
 
 **General:**
-- `Tab` - Switch between tabs (Data, Analysis, Visualizations, AI)
-- `q` - Quit application
-- `?` or `h` - Toggle help screen
+- `Tab` / `Shift+Tab` — Switch tabs (Data, Analysis, Visualizations)
+- `q` — Quit
+- `?` or `h` — Help
 
 **Data Tab:**
-- `L` - Load file (CSV, JSON, or Excel .xlsx)
+- `L` — Load file (CSV, JSON, Excel .xlsx)
+- Enter path, press Enter to load
 
 **Analysis Tab:**
-- `s` - Compute summary statistics
-- `c` - Generate correlation matrix
-- `r` - Perform linear regression
-- `b` - Create box plot
-- `i` - Generate histogram
+- `s` — Summary statistics
+- `c` — Correlation matrix
+- `h` — Histogram
+- `b` — Box plot
+- `r` — Linear regression
+- `t` — Expression trend (microarray)
+- `v` — Young vs Old scatter (microarray)
+- `a` — Age group box plot (microarray)
+- `Enter` — Confirm and run selected analysis
+- `Esc` — Cancel pending analysis
 
 **Visualizations Tab:**
-- `Space` - Toggle visualization display
-
-**AI Tab:**
-- Type message and press `Enter` to send
-- Type `/help` to open the help screen
-- `Esc` - Exit input mode
+- `Space` — Toggle display
+- `O` — Open chart in browser (full-quality SVG)
 
 ## Configuration
 
-The application stores configuration in `~/.config/r-data-agent/config.toml`.
+Config file: `~/.config/r-data-agent/config.toml`
 
-**⚠️ Security Note:** The config file is added to `.gitignore` to prevent API keys from being committed to version control.
-
-### Setting API Key
-
-**Method 1: Use the secure setup script (recommended)**
-
-```bash
-./setup_api_key.sh "YOUR_API_KEY_HERE"
-```
-
-This script:
-- Creates the config directory
-- Writes the API key with secure permissions
-- Sets file permissions to `600` (owner read/write only)
-
-**Method 2: Manually create config file**
-
-```bash
-mkdir -p ~/.config/r-data-agent
-cat > ~/.config/r-data-agent/config.toml << EOF
-api_key = "YOUR_API_KEY"
+```toml
 viz_width = 800
 viz_height = 600
 default_bins = 20
-EOF
-chmod 600 ~/.config/r-data-agent/config.toml
 ```
 
-**Method 3: Environment variable**
+## Example Workflow
 
-```bash
-export R_DATA_AGENT_API_KEY="YOUR_API_KEY"
-```
-
-### Verifying Installation
-
-```bash
-# Check if API key is configured
-cat ~/.config/r-data-agent/config.toml | grep api_key
-
-# Run a quick test
-cargo run
-```
+1. Load microarray data: Data tab → `L` → enter path.
+2. Check layout: Data tab shows "Genes: N | Age columns: M (range X–Y)" when layout is detected.
+3. Run analyses: Analysis tab → press key (`s`, `c`, `t`, `v`, `a`, etc.) → Enter to confirm.
+4. View charts: Visualizations tab → `Space` to toggle, `O` to open SVG.
 
 ## Project Structure
 
 ```
 src/
-├── data/           # Data loading and statistical analysis
-│   ├── ingestion.rs  # CSV/JSON file loading
-│   └── analysis.rs   # Statistical computations
-├── viz/            # Visualization engine
-│   ├── types.rs      # Visualization types
-│   └── engine.rs     # Plotters-based rendering
-├── ai/             # AI integration
-│   ├── client.rs     # API client for Z.ai
-│   └── agent.rs      # Analysis orchestration
-├── ui/             # TUI components
-│   ├── components.rs # Tab components
-│   └── tui.rs       # Main application UI
-└── config/          # Configuration management
-    └── settings.rs   # Config file handling
+├── data/           # Data loading and analysis
+│   ├── ingestion.rs  # CSV/JSON/XLSX, layout detection
+│   └── analysis.rs   # Statistics, expression trend, young vs old
+├── viz/             # Visualization engine
+│   ├── types.rs      # Viz configs
+│   ├── engine.rs     # Plotters rendering
+│   └── availability.rs # Viz availability logic
+├── runner.rs        # Analysis runner (no AI)
+├── ui/              # TUI
+│   ├── components.rs # Tabs, help
+│   └── tui.rs       # Main app
+└── config/          # Config management
 ```
-
-## Example Workflow
-
-1. Load a dataset:
-   ```
-   Data tab → Press 'L' → Enter file path (supports .csv, .json, .xlsx)
-   ```
-
-2. Analyze the data:
-   ```
-   Analysis tab → Press 's' for statistics
-   ```
-
-3. View visualizations:
-   ```
-   Visualizations tab → Press 'Space' to view
-   ```
-
-4. Get AI insights:
-   ```
-   AI tab → Type question → Press Enter
-   ```
-
-## Dependencies
-
-- `ratatui` - Terminal UI framework
-- `polars` - High-performance data manipulation
-- `plotters` - Visualization library
-- `reqwest` - HTTP client for AI API
-- `tokio` - Async runtime
-- `anyhow` - Error handling
 
 ## License
 

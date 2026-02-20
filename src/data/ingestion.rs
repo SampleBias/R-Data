@@ -165,3 +165,88 @@ pub struct ColumnInfo {
     pub dtype: String,
     pub null_count: usize,
 }
+
+/// Describes microarray layout: genes (rows) × age (columns).
+#[derive(Debug, Clone)]
+pub struct DataLayout {
+    pub gene_column: String,
+    pub gene_count: usize,
+    pub age_columns: Vec<String>,
+    pub age_min: i64,
+    pub age_max: i64,
+}
+
+impl DataLayout {
+    /// Detect microarray layout from a DataFrame.
+    /// Expects: column 0 = "Gene ID" (or similar), columns 1+ = age headers (17, 18, 21, ...).
+    pub fn detect(df: &DataFrame) -> Option<Self> {
+        let cols = df.get_columns();
+        if cols.len() < 2 {
+            return None;
+        }
+
+        let first_name = cols[0].name().to_lowercase();
+        let gene_header_patterns = ["gene id", "gene_id", "geneid", "gene", "ensembl"];
+        let is_gene_col = gene_header_patterns
+            .iter()
+            .any(|p| first_name.contains(p) || first_name == *p);
+
+        if !is_gene_col {
+            return None;
+        }
+
+        let mut age_columns = Vec::new();
+        let mut age_min = i64::MAX;
+        let mut age_max = i64::MIN;
+
+        for col in cols.iter().skip(1) {
+            let name = col.name().trim();
+            let age: Option<i64> = name
+                .parse::<i64>()
+                .ok()
+                .or_else(|| name.parse::<f64>().ok().map(|f| f as i64));
+            if let Some(age) = age {
+                if (1..=150).contains(&age) {
+                    age_columns.push(col.name().to_string());
+                    age_min = age_min.min(age);
+                    age_max = age_max.max(age);
+                }
+            }
+        }
+
+        if age_columns.is_empty() {
+            return None;
+        }
+
+        let gene_count = df.height();
+        Some(Self {
+            gene_column: cols[0].name().to_string(),
+            gene_count,
+            age_columns,
+            age_min,
+            age_max,
+        })
+    }
+}
+
+/// Ensure numeric columns are typed as Float64 for expression data.
+/// Converts string columns that parse as numbers when layout is microarray.
+pub fn coerce_expression_columns(df: &mut DataFrame, layout: &DataLayout) -> Result<()> {
+    let to_coerce: Vec<String> = layout
+        .age_columns
+        .iter()
+        .filter_map(|name| {
+            let col = df.column(name).ok()?;
+            if !col.dtype().is_numeric() {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    for col_name in to_coerce {
+        let col = df.column(&col_name)?.cast(&DataType::Float64)?;
+        df.with_column(col)?;
+    }
+    Ok(())
+}

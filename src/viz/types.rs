@@ -6,6 +6,9 @@ pub enum VisualizationType {
     BoxPlot,
     LinearRegression,
     Heatmap,
+    ExpressionTrend,
+    YoungVsOldScatter,
+    AgeGroupBoxPlot,
 }
 
 impl fmt::Display for VisualizationType {
@@ -15,6 +18,9 @@ impl fmt::Display for VisualizationType {
             VisualizationType::BoxPlot => write!(f, "Box Plot"),
             VisualizationType::LinearRegression => write!(f, "Linear Regression"),
             VisualizationType::Heatmap => write!(f, "Heatmap"),
+            VisualizationType::ExpressionTrend => write!(f, "Expression Trend"),
+            VisualizationType::YoungVsOldScatter => write!(f, "Young vs Old Scatter"),
+            VisualizationType::AgeGroupBoxPlot => write!(f, "Age Group Box Plot"),
         }
     }
 }
@@ -41,12 +47,39 @@ pub struct HeatmapConfig {
     pub columns: Vec<String>,
 }
 
+/// Expression vs age for selected gene(s). Requires microarray layout.
+#[derive(Debug, Clone)]
+pub struct ExpressionTrendConfig {
+    pub gene_ids: Vec<String>,
+    pub gene_column: String,
+    pub age_columns: Vec<String>,
+}
+
+/// Mean expression Young vs Old across genes. Requires microarray layout.
+#[derive(Debug, Clone)]
+pub struct YoungVsOldConfig {
+    pub gene_column: String,
+    pub age_columns: Vec<String>,
+    pub young_ages: Vec<String>,
+    pub old_ages: Vec<String>,
+}
+
+/// Box plot by age category. One box per age column.
+#[derive(Debug, Clone)]
+pub struct AgeGroupBoxPlotConfig {
+    pub gene_column: String,
+    pub age_columns: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum VisualizationConfig {
     Histogram(HistogramConfig),
     BoxPlot(BoxPlotConfig),
     LinearRegression(LinearRegressionConfig),
     Heatmap(HeatmapConfig),
+    ExpressionTrend(ExpressionTrendConfig),
+    YoungVsOldScatter(YoungVsOldConfig),
+    AgeGroupBoxPlot(AgeGroupBoxPlotConfig),
 }
 
 #[derive(Debug, Clone)]

@@ -6,7 +6,10 @@ use std::io::Write;
 use std::path::PathBuf;
 use tempfile::Builder;
 use super::types::*;
-use crate::data::{StatisticalAnalyzer, analysis::{HistogramData, BoxplotData, RegressionResult}};
+use crate::data::{
+    StatisticalAnalyzer,
+    analysis::{BoxplotData, HistogramData, RegressionResult},
+};
 use polars::prelude::DataFrame;
 
 const TERM_WIDTH: usize = 58;
@@ -47,6 +50,9 @@ impl VisualizationEngine {
             VisualizationConfig::BoxPlot(cfg) => self.render_boxplot(df, cfg),
             VisualizationConfig::LinearRegression(cfg) => self.render_linear_regression(df, cfg),
             VisualizationConfig::Heatmap(cfg) => self.render_heatmap(df, cfg),
+            VisualizationConfig::ExpressionTrend(cfg) => self.render_expression_trend(df, cfg),
+            VisualizationConfig::YoungVsOldScatter(cfg) => self.render_young_vs_old(df, cfg),
+            VisualizationConfig::AgeGroupBoxPlot(cfg) => self.render_age_group_boxplot(df, cfg),
         }
     }
 
@@ -507,4 +513,308 @@ impl VisualizationEngine {
         }
         Ok(lines.join("\n"))
     }
+
+    fn render_expression_trend(
+        &self,
+        df: &DataFrame,
+        config: &ExpressionTrendConfig,
+    ) -> Result<ChartData> {
+        let trend_data = StatisticalAnalyzer::expression_trend(
+            df,
+            &config.gene_column,
+            &config.age_columns,
+            &config.gene_ids,
+        )?;
+        if trend_data.is_empty() {
+            return Ok(ChartData {
+                chart_type: VisualizationType::ExpressionTrend,
+                svg_output: "No data".to_string(),
+                svg_file_path: None,
+                terminal_output: "No expression trend data".to_string(),
+                title: "Expression Trend".to_string(),
+            });
+        }
+
+        let all_x: Vec<f64> = trend_data
+            .iter()
+            .flat_map(|d| d.points.iter().map(|p| p.age))
+            .collect();
+        let all_y: Vec<f64> = trend_data
+            .iter()
+            .flat_map(|d| d.points.iter().map(|p| p.expression))
+            .collect();
+        let x_min = all_x.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let x_max = all_x.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let y_min = all_y.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let y_max = all_y.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let x_range = (x_max - x_min).max(0.1);
+        let y_range = (y_max - y_min).max(0.1);
+
+        let mut buffer = String::new();
+        {
+            let root = SVGBackend::with_string(&mut buffer, (self.width, self.height))
+                .into_drawing_area();
+            root.fill(&BG_LIGHT_GRAY)?;
+
+            let mut chart = ChartBuilder::on(&root)
+                .caption(
+                    "Expression vs Age",
+                    ("sans-serif", 28).into_font().color(&BLACK),
+                )
+                .x_label_area_size(50)
+                .y_label_area_size(50)
+                .margin(12)
+                .build_cartesian_2d(
+                    (x_min - 0.05 * x_range)..(x_max + 0.05 * x_range),
+                    (y_min - 0.05 * y_range)..(y_max + 0.05 * y_range),
+                )?;
+
+            chart
+                .configure_mesh()
+                .axis_style(GRID_GRAY.stroke_width(1))
+                .x_desc("Age")
+                .y_desc("Expression")
+                .draw()?;
+
+            let colors = [&STEEL_BLUE, &CORAL, &GREEN];
+            for (i, data) in trend_data.iter().enumerate() {
+                let color = colors[i % colors.len()];
+                let points: Vec<(f64, f64)> = data
+                    .points
+                    .iter()
+                    .map(|p| (p.age, p.expression))
+                    .collect();
+                chart.draw_series(LineSeries::new(
+                    points.iter().copied(),
+                    color.stroke_width(2),
+                ))?;
+                chart.draw_series(
+                    points
+                        .iter()
+                        .map(|&(x, y)| Circle::new((x, y), 4, color.filled())),
+                )?;
+            }
+        }
+
+        let terminal_output = format!(
+            "Expression Trend: {} gene(s)\n  Ages: {:.0}-{:.0}",
+            trend_data.len(),
+            x_min,
+            x_max
+        );
+        let svg_file_path = Self::save_svg_to_temp(&buffer, "rdata-trend").ok();
+        Ok(ChartData {
+            chart_type: VisualizationType::ExpressionTrend,
+            svg_output: buffer,
+            svg_file_path,
+            terminal_output,
+            title: "Expression vs Age".to_string(),
+        })
+    }
+
+    fn render_young_vs_old(&self, df: &DataFrame, config: &YoungVsOldConfig) -> Result<ChartData> {
+        let points = StatisticalAnalyzer::young_vs_old(
+            df,
+            &config.gene_column,
+            &config.age_columns,
+        )?;
+        if points.is_empty() {
+            return Ok(ChartData {
+                chart_type: VisualizationType::YoungVsOldScatter,
+                svg_output: "No data".to_string(),
+                svg_file_path: None,
+                terminal_output: "No Young vs Old data".to_string(),
+                title: "Young vs Old Scatter".to_string(),
+            });
+        }
+
+        let x_min = points.iter().map(|p| p.mean_young).fold(f64::INFINITY, f64::min);
+        let x_max = points.iter().map(|p| p.mean_young).fold(f64::NEG_INFINITY, f64::max);
+        let y_min = points.iter().map(|p| p.mean_old).fold(f64::INFINITY, f64::min);
+        let y_max = points.iter().map(|p| p.mean_old).fold(f64::NEG_INFINITY, f64::max);
+        let x_range = (x_max - x_min).max(0.1);
+        let y_range = (y_max - y_min).max(0.1);
+
+        let mut buffer = String::new();
+        {
+            let root = SVGBackend::with_string(&mut buffer, (self.width, self.height))
+                .into_drawing_area();
+            root.fill(&BG_LIGHT_GRAY)?;
+
+            let mut chart = ChartBuilder::on(&root)
+                .caption(
+                    "Young vs Old Expression",
+                    ("sans-serif", 28).into_font().color(&BLACK),
+                )
+                .x_label_area_size(50)
+                .y_label_area_size(50)
+                .margin(12)
+                .build_cartesian_2d(
+                    (x_min - 0.05 * x_range)..(x_max + 0.05 * x_range),
+                    (y_min - 0.05 * y_range)..(y_max + 0.05 * y_range),
+                )?;
+
+            chart
+                .configure_mesh()
+                .axis_style(GRID_GRAY.stroke_width(1))
+                .x_desc("Mean expression (Young)")
+                .y_desc("Mean expression (Old)")
+                .draw()?;
+
+            chart.draw_series(
+                points
+                    .iter()
+                    .map(|p| Circle::new((p.mean_young, p.mean_old), 3, STEEL_BLUE.filled())),
+            )?;
+
+            let diag_min = x_min.min(y_min);
+            let diag_max = x_max.max(y_max);
+            chart.draw_series(std::iter::once(PathElement::new(
+                vec![(diag_min, diag_min), (diag_max, diag_max)],
+                CORAL.stroke_width(1),
+            )))?;
+        }
+
+        let terminal_output = format!(
+            "Young vs Old: {} genes\n  Diagonal = no change",
+            points.len()
+        );
+        let svg_file_path = Self::save_svg_to_temp(&buffer, "rdata-youngold").ok();
+        Ok(ChartData {
+            chart_type: VisualizationType::YoungVsOldScatter,
+            svg_output: buffer,
+            svg_file_path,
+            terminal_output,
+            title: "Young vs Old Scatter".to_string(),
+        })
+    }
+
+    fn render_age_group_boxplot(
+        &self,
+        df: &DataFrame,
+        config: &AgeGroupBoxPlotConfig,
+    ) -> Result<ChartData> {
+        let box_data = StatisticalAnalyzer::age_group_box_data(
+            df,
+            &config.gene_column,
+            &config.age_columns,
+        )?;
+        if box_data.is_empty() {
+            return Ok(ChartData {
+                chart_type: VisualizationType::AgeGroupBoxPlot,
+                svg_output: "No data".to_string(),
+                svg_file_path: None,
+                terminal_output: "No age group data".to_string(),
+                title: "Age Group Box Plot".to_string(),
+            });
+        }
+
+        let mut all_vals = Vec::new();
+        for b in &box_data {
+            all_vals.extend(&b.values);
+        }
+        all_vals.sort_by(|a: &f64, b: &f64| a.partial_cmp(b).unwrap());
+        let y_min = all_vals.first().copied().unwrap_or(0.0);
+        let y_max = all_vals.last().copied().unwrap_or(1.0);
+        let y_range = (y_max - y_min).max(0.1);
+
+        let n = box_data.len();
+        let mut buffer = String::new();
+        {
+            let root = SVGBackend::with_string(&mut buffer, (self.width, self.height))
+                .into_drawing_area();
+            root.fill(&BG_LIGHT_GRAY)?;
+
+            let mut chart = ChartBuilder::on(&root)
+                .caption(
+                    "Expression by Age",
+                    ("sans-serif", 28).into_font().color(&BLACK),
+                )
+                .x_label_area_size(60)
+                .y_label_area_size(50)
+                .margin(12)
+                .build_cartesian_2d(
+                    0f64..(n as f64 + 1.0),
+                    (y_min - 0.05 * y_range)..(y_max + 0.05 * y_range),
+                )?;
+
+            chart
+                .configure_mesh()
+                .axis_style(GRID_GRAY.stroke_width(1))
+                .x_desc("Age")
+                .y_desc("Expression")
+                .draw()?;
+
+            for (i, b) in box_data.iter().enumerate() {
+                let mut vals = b.values.clone();
+                vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                if vals.is_empty() {
+                    continue;
+                }
+                let q1 = percentile(&vals, 25.0);
+                let _median = percentile(&vals, 50.0);
+                let q3 = percentile(&vals, 75.0);
+                let x_center = (i + 1) as f64;
+                let box_w = 0.3;
+
+                chart.draw_series(std::iter::once(PathElement::new(
+                    vec![(x_center, *vals.first().unwrap()), (x_center, q3)],
+                    BLACK.stroke_width(2),
+                )))?;
+                chart.draw_series(std::iter::once(PathElement::new(
+                    vec![(x_center, q1), (x_center, *vals.last().unwrap())],
+                    BLACK.stroke_width(2),
+                )))?;
+                chart.draw_series(std::iter::once(Rectangle::new(
+                    [
+                        (x_center - box_w / 2.0, q1),
+                        (x_center + box_w / 2.0, q3),
+                    ],
+                    STEEL_BLUE.stroke_width(2).filled(),
+                )))?;
+                chart.draw_series(std::iter::once(PathElement::new(
+                    vec![
+                        (x_center - 0.05, *vals.last().unwrap()),
+                        (x_center + 0.05, *vals.last().unwrap()),
+                    ],
+                    BLACK.stroke_width(2),
+                )))?;
+                chart.draw_series(std::iter::once(PathElement::new(
+                    vec![
+                        (x_center - 0.05, *vals.first().unwrap()),
+                        (x_center + 0.05, *vals.first().unwrap()),
+                    ],
+                    BLACK.stroke_width(2),
+                )))?;
+            }
+        }
+
+        let terminal_output = format!(
+            "Age Group Box Plot: {} age columns",
+            box_data.len()
+        );
+        let svg_file_path = Self::save_svg_to_temp(&buffer, "rdata-agebox").ok();
+        Ok(ChartData {
+            chart_type: VisualizationType::AgeGroupBoxPlot,
+            svg_output: buffer,
+            svg_file_path,
+            terminal_output,
+            title: "Expression by Age".to_string(),
+        })
+    }
+}
+
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let n = sorted.len() as f64;
+    let pos = (p / 100.0) * (n - 1.0);
+    let lower = pos.floor() as usize;
+    let upper = pos.ceil() as usize;
+    if lower == upper {
+        return sorted[lower];
+    }
+    let weight = pos - lower as f64;
+    sorted[lower] * (1.0 - weight) + sorted[upper] * weight
 }

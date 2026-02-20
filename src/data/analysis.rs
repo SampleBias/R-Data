@@ -274,3 +274,166 @@ pub struct BoxplotData {
     pub max: f64,
     pub outliers: Vec<f64>,
 }
+
+/// (age, expression) for expression trend plot.
+#[derive(Debug, Clone)]
+pub struct ExpressionTrendPoint {
+    pub age: f64,
+    pub expression: f64,
+}
+
+/// Per-gene expression trend: gene_id -> (age, expression) points.
+#[derive(Debug, Clone)]
+pub struct ExpressionTrendData {
+    pub gene_id: String,
+    pub points: Vec<ExpressionTrendPoint>,
+}
+
+/// Young vs Old scatter: (mean_young, mean_old) per gene.
+#[derive(Debug, Clone)]
+pub struct YoungVsOldPoint {
+    pub gene_id: String,
+    pub mean_young: f64,
+    pub mean_old: f64,
+}
+
+/// Age group box plot: one box per age column.
+#[derive(Debug, Clone)]
+pub struct AgeGroupBoxData {
+    pub age_label: String,
+    pub values: Vec<f64>,
+}
+
+impl StatisticalAnalyzer {
+    /// Expression vs age for selected gene(s). Returns (age, expression) points per gene.
+    pub fn expression_trend(
+        df: &DataFrame,
+        gene_column: &str,
+        age_columns: &[String],
+        gene_ids: &[String],
+    ) -> Result<Vec<ExpressionTrendData>> {
+        let gene_series = df.column(gene_column)?;
+        let gene_str = gene_series.str()?;
+        let mut result = Vec::new();
+
+        for gene_id in gene_ids {
+            let row_idx = gene_str
+                .into_iter()
+                .position(|o| o.map(|s| s == gene_id).unwrap_or(false));
+            let Some(row_idx) = row_idx else { continue };
+
+            let mut points = Vec::new();
+            for col_name in age_columns {
+                let age: f64 = col_name.trim().parse().unwrap_or(0.0);
+                if let Ok(col) = df.column(col_name) {
+                    if let Ok(f64_col) = col.f64() {
+                        if let Some(v) = f64_col.get(row_idx) {
+                            points.push(ExpressionTrendPoint { age, expression: v });
+                        }
+                    }
+                }
+            }
+            points.sort_by(|a, b| a.age.partial_cmp(&b.age).unwrap());
+            if !points.is_empty() {
+                result.push(ExpressionTrendData {
+                    gene_id: gene_id.clone(),
+                    points,
+                });
+            }
+        }
+        Ok(result)
+    }
+
+    /// Mean expression Young vs Old across genes. Splits ages at median.
+    pub fn young_vs_old(
+        df: &DataFrame,
+        gene_column: &str,
+        age_columns: &[String],
+    ) -> Result<Vec<YoungVsOldPoint>> {
+        let ages: Vec<i64> = age_columns
+            .iter()
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        if ages.is_empty() {
+            return Err(anyhow::anyhow!("No valid age columns"));
+        }
+        let mut sorted = ages.clone();
+        sorted.sort();
+        let median_age = sorted[sorted.len() / 2];
+        let (young_cols, old_cols): (Vec<_>, Vec<_>) = age_columns
+            .iter()
+            .partition(|s| s.trim().parse::<i64>().unwrap_or(0) < median_age);
+
+        if young_cols.is_empty() || old_cols.is_empty() {
+            return Err(anyhow::anyhow!("Need both young and old age groups"));
+        }
+
+        let gene_series = df.column(gene_column)?.str()?;
+        let n_rows = df.height();
+        let mut result = Vec::new();
+
+        for row in 0..n_rows {
+            let gene_id = gene_series.get(row).unwrap_or("").to_string();
+            let mut sum_young = 0.0;
+            let mut cnt_young = 0usize;
+            for c in &young_cols {
+                if let Ok(col) = df.column(c) {
+                    if let Ok(f64_col) = col.f64() {
+                        if let Some(v) = f64_col.get(row) {
+                            sum_young += v;
+                            cnt_young += 1;
+                        }
+                    }
+                }
+            }
+            let mean_young = if cnt_young > 0 {
+                sum_young / cnt_young as f64
+            } else {
+                0.0
+            };
+
+            let mut sum_old = 0.0;
+            let mut cnt_old = 0usize;
+            for c in &old_cols {
+                if let Ok(col) = df.column(c) {
+                    if let Ok(f64_col) = col.f64() {
+                        if let Some(v) = f64_col.get(row) {
+                            sum_old += v;
+                            cnt_old += 1;
+                        }
+                    }
+                }
+            }
+            let mean_old = if cnt_old > 0 {
+                sum_old / cnt_old as f64
+            } else {
+                0.0
+            };
+
+            result.push(YoungVsOldPoint {
+                gene_id,
+                mean_young,
+                mean_old,
+            });
+        }
+        Ok(result)
+    }
+
+    /// Box plot by age: one box per age column, values = expression across genes.
+    pub fn age_group_box_data(
+        df: &DataFrame,
+        _gene_column: &str,
+        age_columns: &[String],
+    ) -> Result<Vec<AgeGroupBoxData>> {
+        let mut result = Vec::new();
+        for col_name in age_columns {
+            let col = df.column(col_name)?;
+            let values: Vec<f64> = col.f64()?.into_no_null_iter().collect();
+            result.push(AgeGroupBoxData {
+                age_label: col_name.clone(),
+                values,
+            });
+        }
+        Ok(result)
+    }
+}

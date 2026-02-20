@@ -10,19 +10,19 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::{
-    data::{DataLoader, ColumnInfo},
-    ai::{AIAgent, AnalysisRequest},
-    viz::{VisualizationEngine},
-    config::ConfigManager,
+    data::{DataLoader, ColumnInfo, DataLayout, coerce_expression_columns},
+    runner::{AnalysisRequest, AnalysisRunner},
+    viz::{VisualizationEngine, available_visualizations},
+    config::{Config, ConfigManager},
 };
 use super::components::{AnalysisStatus, AppTabs, LoadStatus, Tab};
 
 pub struct App {
     tabs: AppTabs,
-    agent: AIAgent,
     viz_engine: VisualizationEngine,
     dataframe: Option<polars::prelude::DataFrame>,
     column_info: Vec<ColumnInfo>,
+    data_layout: Option<DataLayout>,
     should_quit: bool,
     input_mode: InputMode,
     file_dialog_state: FileDialogState,
@@ -45,21 +45,18 @@ enum FileDialogState {
 pub enum AppEvent {
     LoadData(String),
     Analysis(AnalysisRequest),
-    AIPrompt(String),
     ToggleViz(bool),
 }
 
 impl App {
-    pub fn new(api_key: Option<String>) -> Result<Self> {
-        let config = ConfigManager::load_config()?;
+    pub fn new(config: Config) -> Result<Self> {
         let viz_engine = VisualizationEngine::new(config.viz_width, config.viz_height);
-        
         Ok(Self {
             tabs: AppTabs::default(),
-            agent: AIAgent::new(api_key),
             viz_engine,
             dataframe: None,
             column_info: Vec::new(),
+            data_layout: None,
             should_quit: false,
             input_mode: InputMode::Normal,
             file_dialog_state: FileDialogState::None,
@@ -89,7 +86,7 @@ impl App {
             {
                 let request = self.pending_analysis.take().unwrap();
                 if let Some(df) = &self.dataframe {
-                    match self.agent.analyze_request(df, request).await {
+                    match AnalysisRunner::run(df, request) {
                         Ok(result) => {
                             let output = format!(
                                 "{}\n\n{}",
@@ -146,7 +143,6 @@ impl App {
                 Tab::Data => self.render_data_tab(f, chunks[1]),
                 Tab::Analysis => self.render_analysis_tab(f, chunks[1]),
                 Tab::Visualizations => self.render_viz_tab(f, chunks[1]),
-                Tab::AI => self.render_ai_tab(f, chunks[1]),
             }
         })?;
         Ok(())
@@ -162,7 +158,7 @@ impl App {
             let instructions = vec![
                 "LOAD FILE — Enter the full path to your data file",
                 "",
-                "Supported formats: .csv  .json  .xlsx (Excel)",
+                "Microarray format: Gene ID (col A), ages as column headers (17, 18, 21...).",
                 "",
                 "Examples:",
                 "  ./data/sales.csv",
@@ -207,7 +203,7 @@ impl App {
                 .wrap(Wrap { trim: false })
                 .render(chunks[0], f.buffer_mut());
 
-            let load_hint = "Press L to load a file (CSV, JSON, or Excel .xlsx)";
+            let load_hint = "Press L to load microarray data: genes (rows) × age (columns). CSV, JSON, or Excel .xlsx";
             Paragraph::new(load_hint)
                 .block(Block::default().borders(Borders::ALL).title(" Load File "))
                 .render(chunks[1], f.buffer_mut());
@@ -271,8 +267,32 @@ impl App {
             .wrap(Wrap { trim: false })
             .render(chunks[0], f.buffer_mut());
 
+        let viz_list = available_visualizations(
+            self.dataframe.as_ref(),
+            self.data_layout.as_ref(),
+        );
+        let list_text: String = viz_list
+            .iter()
+            .map(|v| {
+                if v.available {
+                    format!("  [{}] {}", v.key, v.label)
+                } else {
+                    format!(
+                        "  [{}] {} (disabled: {})",
+                        v.key,
+                        v.label,
+                        v.reason.as_deref().unwrap_or("?")
+                    )
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
         if self.tabs.analysis.results.is_empty() {
-            Paragraph::new("No analysis results yet.\n\nPress keys to run analyses:\n  s - Summary statistics\n  c - Correlation matrix\n  r - Linear regression\n  b - Box plot\n  i - Histogram")
+            Paragraph::new(format!(
+                "No analysis results yet.\n\nPress keys to run analyses:\n{}",
+                list_text
+            ))
                 .block(Block::default().borders(Borders::ALL).title(" Results "))
                 .wrap(Wrap { trim: false })
                 .render(chunks[1], f.buffer_mut());
@@ -303,33 +323,6 @@ impl App {
                 .block(Block::default().borders(Borders::ALL).title(" Visualizations "))
                 .wrap(Wrap { trim: false })
                 .render(area, f.buffer_mut());
-        }
-    }
-
-    fn render_ai_tab(&self, f: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
-            .split(area);
-
-        let conversation_text = if self.tabs.ai.conversation.is_empty() {
-            "No conversation yet. Type a message and press Enter to send.".to_string()
-        } else {
-            self.tabs.ai.conversation.join("\n\n")
-        };
-
-        Paragraph::new(conversation_text)
-            .block(Block::default().borders(Borders::ALL).title(" AI Assistant "))
-            .wrap(Wrap { trim: false })
-            .render(chunks[0], f.buffer_mut());
-
-        Paragraph::new(self.tabs.ai.input.lines().join("\n"))
-            .block(Block::default().borders(Borders::ALL).title(" Input (Enter to send, Esc to clear) "))
-            .render(chunks[1], f.buffer_mut());
-
-        if self.tabs.ai.loading {
-            Paragraph::new("Loading AI response...")
-                .render(Rect::new(area.x + 10, area.y + 10, 30, 3), f.buffer_mut());
         }
     }
 
@@ -366,7 +359,6 @@ impl App {
                     self.input_mode = InputMode::Normal;
                     self.file_dialog_state = FileDialogState::None;
                     self.tabs.data.file_path_input.clear();
-                    self.tabs.ai.input = tui_textarea::TextArea::default();
                 } else if self.tabs.active == Tab::Analysis
                     && matches!(self.tabs.analysis.analysis_status, AnalysisStatus::PendingConfirm { .. })
                 {
@@ -386,18 +378,37 @@ impl App {
                     let expanded = shellexpand::tilde(&path).to_string();
                     self.tabs.data.load_status = LoadStatus::Loading;
                     match DataLoader::load_dataframe(&expanded) {
-                        Ok(df) => {
+                        Ok(mut df) => {
+                            let layout = DataLayout::detect(&df);
+                            if let Some(ref l) = layout {
+                                let _ = coerce_expression_columns(&mut df, l);
+                            }
                             let info = DataLoader::get_column_info(&df);
                             let preview = format!("{:.5}", df.head(Some(10)));
                             let row_count = df.height();
 
                             self.dataframe = Some(df);
                             self.column_info = info;
+                            self.data_layout = layout;
                             self.tabs.data.file_path = expanded.clone();
-                            self.tabs.data.dataframe_info = self.column_info.iter()
-                                .map(|c| format!("{}: {} (nulls: {})", c.name, c.dtype, c.null_count))
-                                .collect::<Vec<_>>()
-                                .join("\n");
+                            self.tabs.data.dataframe_info = if let Some(ref l) = self.data_layout {
+                                format!(
+                                    "Microarray layout detected\nGenes: {} | Age columns: {} (range {}-{})\n\n{}",
+                                    l.gene_count,
+                                    l.age_columns.len(),
+                                    l.age_min,
+                                    l.age_max,
+                                    self.column_info.iter()
+                                        .map(|c| format!("{}: {} (nulls: {})", c.name, c.dtype, c.null_count))
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                )
+                            } else {
+                                self.column_info.iter()
+                                    .map(|c| format!("{}: {} (nulls: {})", c.name, c.dtype, c.null_count))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            };
                             self.tabs.data.preview_data = preview;
                             self.tabs.data.load_status = LoadStatus::Success(format!(
                                 "Loaded {} rows from {}",
@@ -420,12 +431,6 @@ impl App {
             KeyCode::Backspace if self.input_mode == InputMode::Editing && matches!(self.file_dialog_state, FileDialogState::AwaitingPath) => {
                 self.tabs.data.file_path_input.pop();
             }
-            KeyCode::Char(c) if self.input_mode == InputMode::Editing => {
-                self.tabs.ai.input.insert_char(c);
-            }
-            KeyCode::Backspace if self.input_mode == InputMode::Editing => {
-                self.tabs.ai.input.delete_char();
-            }
             KeyCode::Char(' ') if self.tabs.active == Tab::Visualizations && self.input_mode == InputMode::Normal => {
                 self.tabs.viz.show_viz = !self.tabs.viz.show_viz;
             }
@@ -439,65 +444,116 @@ impl App {
             => {
                 self.tabs.analysis.analysis_status = AnalysisStatus::Loading;
             }
-            KeyCode::Char('s') if self.tabs.active == Tab::Analysis && self.input_mode == InputMode::Normal => {
-                if self.dataframe.is_some() {
-                    self.pending_analysis = Some(AnalysisRequest::SummaryStats);
-                    self.tabs.analysis.analysis_status =
-                        AnalysisStatus::PendingConfirm { request: "Summary statistics".to_string() };
-                }
-            }
-            KeyCode::Char('c') if self.tabs.active == Tab::Analysis && self.input_mode == InputMode::Normal => {
-                if self.dataframe.is_some() {
-                    self.pending_analysis = Some(AnalysisRequest::Correlation);
-                    self.tabs.analysis.analysis_status =
-                        AnalysisStatus::PendingConfirm { request: "Correlation matrix".to_string() };
-                }
-            }
-            KeyCode::Char('r') if self.tabs.active == Tab::Analysis && self.input_mode == InputMode::Normal => {
-                if let Some(df) = &self.dataframe {
-                    let numeric_cols: Vec<String> = df.get_columns()
-                        .iter()
-                        .filter(|c| c.dtype().is_numeric())
-                        .map(|c| c.name().to_string())
-                        .collect();
-                    if numeric_cols.len() >= 2 {
-                        let x = numeric_cols[0].clone();
-                        let y = numeric_cols[1].clone();
-                        self.pending_analysis = Some(AnalysisRequest::LinearRegression {
-                            x_column: x.clone(),
-                            y_column: y.clone(),
-                        });
-                        self.tabs.analysis.analysis_status =
-                            AnalysisStatus::PendingConfirm { request: format!("Linear regression: {} vs {}", x, y) };
+            KeyCode::Char(c) if self.tabs.active == Tab::Analysis && self.input_mode == InputMode::Normal => {
+                let viz_list = available_visualizations(
+                    self.dataframe.as_ref(),
+                    self.data_layout.as_ref(),
+                );
+                let avail = viz_list.iter().find(|v| v.key == c);
+                if let Some(v) = avail {
+                    if !v.available {
+                        return Ok(());
                     }
                 }
-            }
-            KeyCode::Char('b') if self.tabs.active == Tab::Analysis && self.input_mode == InputMode::Normal => {
-                if let Some(df) = &self.dataframe {
-                    if let Some(col) = df.get_columns().iter()
-                        .find(|c| c.dtype().is_numeric())
-                        .map(|c| c.name().to_string())
-                    {
-                        self.pending_analysis = Some(AnalysisRequest::BoxPlot { column: col.clone() });
+                match c {
+                    's' if avail.map(|v| v.available).unwrap_or(false) => {
+                        self.pending_analysis = Some(AnalysisRequest::SummaryStats);
                         self.tabs.analysis.analysis_status =
-                            AnalysisStatus::PendingConfirm { request: format!("Box plot: {}", col) };
+                            AnalysisStatus::PendingConfirm { request: "Summary statistics".to_string() };
                     }
-                }
-            }
-            KeyCode::Char('i') if self.tabs.active == Tab::Analysis && self.input_mode == InputMode::Normal => {
-                if let Some(df) = &self.dataframe {
-                    if let Some(col) = df.get_columns().iter()
-                        .find(|c| c.dtype().is_numeric())
-                        .map(|c| c.name().to_string())
-                    {
-                        let bins = ConfigManager::load_config().map(|c| c.default_bins).unwrap_or(20);
-                        self.pending_analysis = Some(AnalysisRequest::Histogram {
-                            column: col.clone(),
-                            bins,
-                        });
+                    'c' if avail.map(|v| v.available).unwrap_or(false) => {
+                        self.pending_analysis = Some(AnalysisRequest::Correlation);
                         self.tabs.analysis.analysis_status =
-                            AnalysisStatus::PendingConfirm { request: format!("Histogram: {} ({} bins)", col, bins) };
+                            AnalysisStatus::PendingConfirm { request: "Correlation matrix".to_string() };
                     }
+                    'r' if avail.map(|v| v.available).unwrap_or(false) => {
+                        if let Some(df) = &self.dataframe {
+                            let numeric_cols: Vec<String> = df.get_columns()
+                                .iter()
+                                .filter(|c| c.dtype().is_numeric())
+                                .map(|c| c.name().to_string())
+                                .collect();
+                            if numeric_cols.len() >= 2 {
+                                let x = numeric_cols[0].clone();
+                                let y = numeric_cols[1].clone();
+                                self.pending_analysis = Some(AnalysisRequest::LinearRegression {
+                                    x_column: x.clone(),
+                                    y_column: y.clone(),
+                                });
+                                self.tabs.analysis.analysis_status =
+                                    AnalysisStatus::PendingConfirm { request: format!("Linear regression: {} vs {}", x, y) };
+                            }
+                        }
+                    }
+                    'b' if avail.map(|v| v.available).unwrap_or(false) => {
+                        if let Some(df) = &self.dataframe {
+                            if let Some(col) = df.get_columns().iter()
+                                .find(|c| c.dtype().is_numeric())
+                                .map(|c| c.name().to_string())
+                            {
+                                self.pending_analysis = Some(AnalysisRequest::BoxPlot { column: col.clone() });
+                                self.tabs.analysis.analysis_status =
+                                    AnalysisStatus::PendingConfirm { request: format!("Box plot: {}", col) };
+                            }
+                        }
+                    }
+                    'h' if avail.map(|v| v.available).unwrap_or(false) => {
+                        if let Some(df) = &self.dataframe {
+                            if let Some(col) = df.get_columns().iter()
+                                .find(|c| c.dtype().is_numeric())
+                                .map(|c| c.name().to_string())
+                            {
+                                let bins = ConfigManager::load_config().map(|c| c.default_bins).unwrap_or(20);
+                                self.pending_analysis = Some(AnalysisRequest::Histogram {
+                                    column: col.clone(),
+                                    bins,
+                                });
+                                self.tabs.analysis.analysis_status =
+                                    AnalysisStatus::PendingConfirm { request: format!("Histogram: {} ({} bins)", col, bins) };
+                            }
+                        }
+                    }
+                    't' if avail.map(|v| v.available).unwrap_or(false) => {
+                        if let Some(layout) = &self.data_layout {
+                            let gene_ids: Vec<String> = self
+                                .dataframe
+                                .as_ref()
+                                .and_then(|df| df.column(&layout.gene_column).ok())
+                                .and_then(|c| c.str().ok())
+                                .map(|s| s.into_iter().take(3).filter_map(|o| o.map(str::to_string)).collect())
+                                .unwrap_or_default();
+                            if !gene_ids.is_empty() {
+                                self.pending_analysis = Some(AnalysisRequest::ExpressionTrend {
+                                    gene_ids,
+                                    gene_column: layout.gene_column.clone(),
+                                    age_columns: layout.age_columns.clone(),
+                                });
+                                self.tabs.analysis.analysis_status =
+                                    AnalysisStatus::PendingConfirm { request: "Expression trend (first 3 genes)".to_string() };
+                            }
+                        }
+                    }
+                    'v' if avail.map(|v| v.available).unwrap_or(false) => {
+                        if let Some(layout) = &self.data_layout {
+                            self.pending_analysis = Some(AnalysisRequest::YoungVsOld {
+                                gene_column: layout.gene_column.clone(),
+                                age_columns: layout.age_columns.clone(),
+                            });
+                            self.tabs.analysis.analysis_status =
+                                AnalysisStatus::PendingConfirm { request: "Young vs Old scatter".to_string() };
+                        }
+                    }
+                    'a' if avail.map(|v| v.available).unwrap_or(false) => {
+                        if let Some(layout) = &self.data_layout {
+                            self.pending_analysis = Some(AnalysisRequest::AgeGroupBoxPlot {
+                                gene_column: layout.gene_column.clone(),
+                                age_columns: layout.age_columns.clone(),
+                            });
+                            self.tabs.analysis.analysis_status =
+                                AnalysisStatus::PendingConfirm { request: "Age group box plot".to_string() };
+                        }
+                    }
+                    _ => {}
                 }
             }
             _ if self.tabs.active == Tab::Analysis && self.input_mode == InputMode::Normal => {
@@ -508,23 +564,6 @@ impl App {
             _ if self.tabs.active == Tab::Data && self.input_mode == InputMode::Normal => {
                 if matches!(self.tabs.data.load_status, LoadStatus::Success(_) | LoadStatus::Error(_)) {
                     self.tabs.data.load_status = LoadStatus::Idle;
-                }
-            }
-            KeyCode::Enter if self.tabs.active == Tab::AI && self.input_mode == InputMode::Normal => {
-                self.input_mode = InputMode::Editing;
-            }
-            KeyCode::Enter if self.tabs.active == Tab::AI && self.input_mode == InputMode::Editing => {
-                let prompt = self.tabs.ai.input.lines().join("\n").trim().to_string();
-                if !prompt.is_empty() {
-                    if prompt == "/help" || prompt.to_lowercase() == "help" {
-                        self.tabs.show_help = true;
-                        self.tabs.ai.input = tui_textarea::TextArea::default();
-                        self.input_mode = InputMode::Normal;
-                    } else {
-                        self.tabs.ai.conversation.push(format!("You: {}", prompt));
-                        self.tabs.ai.input = tui_textarea::TextArea::default();
-                        self.input_mode = InputMode::Normal;
-                    }
                 }
             }
             _ => {}
@@ -552,40 +591,23 @@ impl App {
             }
             AppEvent::Analysis(request) => {
                 if let Some(df) = &self.dataframe {
-                    let result = self.agent.analyze_request(df, request).await?;
-                    
-                    let output = format!("{}\n\n{}", result.summary, 
-                        result.details.as_deref().unwrap_or("No details"));
-                    
-                    self.tabs.analysis.results.push(output);
-                    
-                    if let Some(viz_config) = result.viz_config {
-                        if let Ok(viz_data) = self.viz_engine.render(df, &viz_config) {
-                            self.tabs.viz.viz_output = viz_data.terminal_output;
-                            self.tabs.viz.viz_title = viz_data.title;
-                            self.tabs.viz.viz_svg_path = viz_data.svg_file_path;
-                            self.tabs.viz.show_viz = true;
+                    if let Ok(result) = AnalysisRunner::run(df, request) {
+                        let output = format!(
+                            "{}\n\n{}",
+                            result.summary,
+                            result.details.as_deref().unwrap_or("No details")
+                        );
+                        self.tabs.analysis.results.push(output);
+                        if let Some(viz_config) = result.viz_config {
+                            if let Ok(viz_data) = self.viz_engine.render(df, &viz_config) {
+                                self.tabs.viz.viz_output = viz_data.terminal_output;
+                                self.tabs.viz.viz_title = viz_data.title;
+                                self.tabs.viz.viz_svg_path = viz_data.svg_file_path;
+                                self.tabs.viz.show_viz = true;
+                            }
                         }
+                        self.tabs.active = Tab::Analysis;
                     }
-                    
-                    self.tabs.active = Tab::Analysis;
-                }
-            }
-            AppEvent::AIPrompt(prompt) => {
-                self.tabs.ai.conversation.push(format!("You: {}", prompt));
-                
-                if self.dataframe.is_some() {
-                    let df = self.dataframe.as_ref().unwrap();
-                    if let Ok(result) = self.agent.analyze_request(
-                        df,
-                        AnalysisRequest::CustomInsight { prompt: prompt.clone() }
-                    ).await {
-                        self.tabs.ai.conversation.push(format!("AI: {}", result.summary));
-                    } else {
-                        self.tabs.ai.conversation.push("AI: Failed to get response".to_string());
-                    }
-                } else {
-                    self.tabs.ai.conversation.push("AI: Load data first for better insights".to_string());
                 }
             }
             AppEvent::ToggleViz(show) => {

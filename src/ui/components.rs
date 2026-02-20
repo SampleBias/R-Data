@@ -2,14 +2,12 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph, Wrap},
 };
-use tui_textarea::TextArea;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Data,
     Analysis,
     Visualizations,
-    AI,
 }
 
 impl Tab {
@@ -19,7 +17,6 @@ impl Tab {
             Tab::Data => "Data",
             Tab::Analysis => "Analysis",
             Tab::Visualizations => "Viz",
-            Tab::AI => "AI",
         }
     }
 }
@@ -96,27 +93,10 @@ impl Default for VizTab {
     }
 }
 
-pub struct AITab {
-    pub input: TextArea<'static>,
-    pub conversation: Vec<String>,
-    pub loading: bool,
-}
-
-impl Default for AITab {
-    fn default() -> Self {
-        Self {
-            input: TextArea::default(),
-            conversation: Vec::new(),
-            loading: false,
-        }
-    }
-}
-
 pub struct AppTabs {
     pub data: DataTab,
     pub analysis: AnalysisTab,
     pub viz: VizTab,
-    pub ai: AITab,
     pub active: Tab,
     pub show_help: bool,
 }
@@ -127,7 +107,6 @@ impl Default for AppTabs {
             data: DataTab::default(),
             analysis: AnalysisTab::default(),
             viz: VizTab::default(),
-            ai: AITab::default(),
             active: Tab::Data,
             show_help: false,
         }
@@ -139,17 +118,15 @@ impl AppTabs {
         self.active = match self.active {
             Tab::Data => Tab::Analysis,
             Tab::Analysis => Tab::Visualizations,
-            Tab::Visualizations => Tab::AI,
-            Tab::AI => Tab::Data,
+            Tab::Visualizations => Tab::Data,
         }
     }
 
     pub fn previous_tab(&mut self) {
         self.active = match self.active {
-            Tab::Data => Tab::AI,
+            Tab::Data => Tab::Visualizations,
             Tab::Analysis => Tab::Data,
             Tab::Visualizations => Tab::Analysis,
-            Tab::AI => Tab::Visualizations,
         }
     }
 
@@ -158,10 +135,9 @@ impl AppTabs {
             (self.active == Tab::Data, "Data"),
             (self.active == Tab::Analysis, "Analysis"),
             (self.active == Tab::Visualizations, "Visualizations"),
-            (self.active == Tab::AI, "AI Assistant"),
         ];
 
-        let header = "  R-Data Agent  │  ? or h = Help  ";
+        let header = "  Longevity Gene Expression  │  ? or h = Help  ";
         let tabs_block = Block::default()
             .borders(Borders::ALL)
             .title(header);
@@ -182,7 +158,7 @@ impl AppTabs {
         let tabs_layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(
-                [Constraint::Length(12), Constraint::Length(12), Constraint::Length(14), Constraint::Length(14)]
+                [Constraint::Length(12), Constraint::Length(12), Constraint::Length(14)]
             )
             .split(tabs_area);
 
@@ -213,7 +189,7 @@ impl AppTabs {
     pub fn render_help(&self, area: Rect, buf: &mut Buffer) {
         let help_text = vec![
             "╔══════════════════════════════════════════════════════════════╗",
-            "║  R-Data Agent — Keyboard Shortcuts (press ? or h to close)  ║",
+            "║  Longevity Gene Expression — Keyboard Shortcuts (? or h to close)  ║",
             "╚══════════════════════════════════════════════════════════════╝",
             "",
             "  NAVIGATION",
@@ -230,11 +206,14 @@ impl AppTabs {
             "",
             "  ANALYSIS TAB — Run statistical analyses",
             "  ────────────────────────────────────────",
-            "    s                 Summary statistics (confirm with Enter)",
+            "    s                 Summary statistics",
             "    c                 Correlation matrix",
-            "    r                 Linear regression (first 2 numeric cols)",
-            "    b                 Box plot (first numeric column)",
-            "    i                 Histogram (first numeric column)",
+            "    h                 Histogram",
+            "    b                 Box plot",
+            "    r                 Linear regression",
+            "    t                 Expression trend (microarray)",
+            "    v                 Young vs Old scatter (microarray)",
+            "    a                 Age group box plot (microarray)",
             "    Enter             Confirm and run selected analysis",
             "    Esc               Cancel pending analysis",
             "",
@@ -242,11 +221,6 @@ impl AppTabs {
             "  ─────────────────────────────────────",
             "    Space             Toggle display",
             "    O                 Open chart in browser (full-quality SVG)",
-            "",
-            "  AI TAB — Chat with AI assistant",
-            "  ────────────────────────────────",
-            "    Enter             Start typing / Send message",
-            "    Esc               Exit input mode / Clear",
             "",
             "  Supported file formats: .csv  .json  .xlsx",
         ];

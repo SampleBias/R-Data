@@ -10,18 +10,15 @@ crossterm = "0.28"
 polars = { version = "0.44", features = ["lazy", "csv", "json", "dtype-full"] }
 plotters = "0.3"
 plotters-svg = "0.3"
-reqwest = { version = "0.12", features = ["json"] }
-tokio = { version = "1.40", features = ["full"] }
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
 thiserror = "2.0"
 unicode-width = "0.2"
 chrono = "0.4"
-tui-textarea = "0.7"
 dirs = "5.0"
 toml = "0.8"
-dotenvy = "0.15"
 calamine = "0.26"
 shellexpand = "3.1"
 tempfile = "3.14"
