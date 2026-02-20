@@ -1,12 +1,22 @@
 use anyhow::Result;
 use plotters::prelude::*;
+use plotters::style::RGBColor;
 use plotters_svg::SVGBackend;
+use std::io::Write;
+use std::path::PathBuf;
+use tempfile::Builder;
 use super::types::*;
 use crate::data::{StatisticalAnalyzer, analysis::{HistogramData, BoxplotData, RegressionResult}};
 use polars::prelude::DataFrame;
 
 const TERM_WIDTH: usize = 58;
 const TERM_HEIGHT: usize = 16;
+
+// ggplot2-inspired color palette
+const BG_LIGHT_GRAY: RGBColor = RGBColor(245, 245, 245);
+const GRID_GRAY: RGBColor = RGBColor(230, 230, 230);
+const STEEL_BLUE: RGBColor = RGBColor(70, 130, 180);
+const CORAL: RGBColor = RGBColor(231, 76, 60);
 
 pub struct VisualizationEngine {
     width: u32,
@@ -24,6 +34,13 @@ impl VisualizationEngine {
         Self { width, height }
     }
 
+    fn save_svg_to_temp(svg: &str, prefix: &str) -> Result<PathBuf> {
+        let mut temp = Builder::new().prefix(prefix).suffix(".svg").tempfile()?;
+        temp.write_all(svg.as_bytes())?;
+        let path = temp.into_temp_path().keep()?;
+        Ok(path.into())
+    }
+
     pub fn render(&self, df: &DataFrame, config: &VisualizationConfig) -> Result<ChartData> {
         match config {
             VisualizationConfig::Histogram(cfg) => self.render_histogram(df, cfg),
@@ -39,15 +56,15 @@ impl VisualizationEngine {
         let mut buffer = String::new();
         {
             let root = SVGBackend::with_string(&mut buffer, (self.width, self.height)).into_drawing_area();
-            root.fill(&WHITE)?;
+            root.fill(&BG_LIGHT_GRAY)?;
 
             let max_count = *hist_data.bin_counts.iter().max().unwrap_or(&1) as i32;
 
             let mut chart = ChartBuilder::on(&root)
-                .caption(format!("Histogram: {}", config.column), ("sans-serif", 30))
+                .caption(format!("Histogram: {}", config.column), ("sans-serif", 28).into_font().color(&BLACK))
                 .x_label_area_size(40)
                 .y_label_area_size(40)
-                .margin(10)
+                .margin(12)
                 .build_cartesian_2d(
                     (hist_data.min_val)..(hist_data.max_val),
                     0i32..max_count,
@@ -55,6 +72,7 @@ impl VisualizationEngine {
 
             chart
                 .configure_mesh()
+                .axis_style(GRID_GRAY.stroke_width(1))
                 .x_desc("Value")
                 .y_desc("Frequency")
                 .draw()?;
@@ -64,15 +82,17 @@ impl VisualizationEngine {
                     let x_start = hist_data.min_val + (i as f64) * hist_data.bin_width;
                     let x_end = x_start + hist_data.bin_width;
                     let count = hist_data.bin_counts[i] as i32;
-                    Rectangle::new([(x_start, 0), (x_end, count)], BLUE.filled())
+                    Rectangle::new([(x_start, 0), (x_end, count)], STEEL_BLUE.filled())
                 }),
             )?;
         }
 
         let terminal_output = Self::render_histogram_ascii(&hist_data, config.bins);
+        let svg_file_path = Self::save_svg_to_temp(&buffer, "rdata-histogram").ok();
         Ok(ChartData {
             chart_type: VisualizationType::Histogram,
             svg_output: buffer,
+            svg_file_path,
             terminal_output,
             title: format!("Histogram: {}", config.column),
         })
@@ -107,19 +127,20 @@ impl VisualizationEngine {
         let mut buffer = String::new();
         {
             let root = SVGBackend::with_string(&mut buffer, (self.width, self.height)).into_drawing_area();
-            root.fill(&WHITE)?;
+            root.fill(&BG_LIGHT_GRAY)?;
 
             let y_min = box_data.min - 0.1 * (box_data.max - box_data.min);
             let y_max = box_data.max + 0.1 * (box_data.max - box_data.min);
 
             let mut chart = ChartBuilder::on(&root)
-                .caption(format!("Box Plot: {}", config.column), ("sans-serif", 30))
+                .caption(format!("Box Plot: {}", config.column), ("sans-serif", 28).into_font().color(&BLACK))
                 .y_label_area_size(50)
-                .margin(10)
+                .margin(12)
                 .build_cartesian_2d(0f64..1f64, y_min..y_max)?;
 
             chart
                 .configure_mesh()
+                .axis_style(GRID_GRAY.stroke_width(1))
                 .y_desc("Value")
                 .disable_x_mesh()
                 .disable_x_axis()
@@ -130,7 +151,7 @@ impl VisualizationEngine {
             let whisker_width = 0.05;
 
             let black = &BLACK;
-            let blue = &BLUE;
+            let blue = &STEEL_BLUE;
 
             chart.draw_series(std::iter::once(PathElement::new(
                 vec![
@@ -173,15 +194,17 @@ impl VisualizationEngine {
                 chart.draw_series(std::iter::once(Circle::new(
                     (x_center, *outlier),
                     5,
-                    RED.filled(),
+                    CORAL.filled(),
                 )))?;
             }
         }
 
         let terminal_output = Self::render_boxplot_ascii(&box_data);
+        let svg_file_path = Self::save_svg_to_temp(&buffer, "rdata-boxplot").ok();
         Ok(ChartData {
             chart_type: VisualizationType::BoxPlot,
             svg_output: buffer,
+            svg_file_path,
             terminal_output,
             title: format!("Box Plot: {}", config.column),
         })
@@ -243,19 +266,16 @@ impl VisualizationEngine {
         let mut buffer = String::new();
         {
             let root = SVGBackend::with_string(&mut buffer, (self.width, self.height)).into_drawing_area();
-            root.fill(&WHITE)?;
+            root.fill(&BG_LIGHT_GRAY)?;
 
             let mut chart = ChartBuilder::on(&root)
                 .caption(
-                    format!(
-                        "Linear Regression: R² = {:.4}",
-                        reg.r_squared
-                    ),
-                    ("sans-serif", 30),
+                    format!("Linear Regression: R² = {:.4}", reg.r_squared),
+                    ("sans-serif", 28).into_font().color(&BLACK),
                 )
                 .x_label_area_size(50)
                 .y_label_area_size(50)
-                .margin(10)
+                .margin(12)
                 .build_cartesian_2d(
                     (x_min - 0.1 * x_range)..(x_max + 0.1 * x_range),
                     (y_min - 0.1 * y_range)..(y_max + 0.1 * y_range),
@@ -263,13 +283,14 @@ impl VisualizationEngine {
 
             chart
                 .configure_mesh()
+                .axis_style(GRID_GRAY.stroke_width(1))
                 .x_desc(config.x_column.clone())
                 .y_desc(config.y_column.clone())
                 .draw()?;
 
             chart.draw_series(
                 x_data.iter().zip(y_data.iter()).map(|(&x, &y)| {
-                    Circle::new((x, y), 3, BLUE.filled())
+                    Circle::new((x, y), 4, STEEL_BLUE.filled())
                 }),
             )?;
 
@@ -277,16 +298,10 @@ impl VisualizationEngine {
             let line_end = x_max + 0.1 * x_range;
             chart.draw_series(std::iter::once(PathElement::new(
                 vec![
-                    (
-                        line_start,
-                        reg.slope * line_start + reg.intercept,
-                    ),
-                    (
-                        line_end,
-                        reg.slope * line_end + reg.intercept,
-                    ),
+                    (line_start, reg.slope * line_start + reg.intercept),
+                    (line_end, reg.slope * line_end + reg.intercept),
                 ],
-                RED.stroke_width(2),
+                CORAL.stroke_width(3),
             )))?;
         }
 
@@ -301,9 +316,11 @@ impl VisualizationEngine {
             &config.x_column,
             &config.y_column,
         );
+        let svg_file_path = Self::save_svg_to_temp(&buffer, "rdata-regression").ok();
         Ok(ChartData {
             chart_type: VisualizationType::LinearRegression,
             svg_output: buffer,
+            svg_file_path,
             terminal_output,
             title: format!("Linear Regression: {} vs {} (R²={:.4})", config.y_column, config.x_column, reg.r_squared),
         })
@@ -397,6 +414,7 @@ impl VisualizationEngine {
             return Ok(ChartData {
                 chart_type: VisualizationType::Heatmap,
                 svg_output: "No numeric columns available".to_string(),
+                svg_file_path: None,
                 terminal_output: "No numeric columns available".to_string(),
                 title: "Correlation Heatmap".to_string(),
             });
@@ -405,7 +423,7 @@ impl VisualizationEngine {
         let mut buffer = String::new();
         {
             let root = SVGBackend::with_string(&mut buffer, (self.width, self.height)).into_drawing_area();
-            root.fill(&WHITE)?;
+            root.fill(&BG_LIGHT_GRAY)?;
 
             let cell_size = 60;
             let offset_x: i32 = 60;
@@ -459,9 +477,11 @@ impl VisualizationEngine {
         }
 
         let terminal_output = Self::render_heatmap_ascii(&corr_matrix, &cols)?;
+        let svg_file_path = Self::save_svg_to_temp(&buffer, "rdata-heatmap").ok();
         Ok(ChartData {
             chart_type: VisualizationType::Heatmap,
             svg_output: buffer,
+            svg_file_path,
             terminal_output,
             title: "Correlation Heatmap".to_string(),
         })

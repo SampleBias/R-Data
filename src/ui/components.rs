@@ -81,6 +81,7 @@ impl Default for AnalysisTab {
 pub struct VizTab {
     pub viz_output: String,
     pub viz_title: String,
+    pub viz_svg_path: Option<std::path::PathBuf>,
     pub show_viz: bool,
 }
 
@@ -89,6 +90,7 @@ impl Default for VizTab {
         Self {
             viz_output: String::new(),
             viz_title: String::new(),
+            viz_svg_path: None,
             show_viz: false,
         }
     }
@@ -238,7 +240,8 @@ impl AppTabs {
             "",
             "  VISUALIZATIONS TAB — View charts",
             "  ─────────────────────────────────────",
-            "    Space             Toggle visualization display",
+            "    Space             Toggle display",
+            "    O                 Open chart in browser (full-quality SVG)",
             "",
             "  AI TAB — Chat with AI assistant",
             "  ────────────────────────────────",

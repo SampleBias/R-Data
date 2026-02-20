@@ -103,6 +103,7 @@ impl App {
                                 if let Ok(viz_data) = self.viz_engine.render(df, &viz_config) {
                                     self.tabs.viz.viz_output = viz_data.terminal_output;
                                     self.tabs.viz.viz_title = viz_data.title;
+                                    self.tabs.viz.viz_svg_path = viz_data.svg_file_path;
                                     self.tabs.viz.show_viz = true;
                                 }
                             }
@@ -298,7 +299,7 @@ impl App {
                 .wrap(Wrap { trim: false })
                 .render(area, f.buffer_mut());
         } else {
-            Paragraph::new("Press 'Space' to toggle visualization display.\n\nRun analyses (s, c, r, b, i) from the Analysis tab to generate terminal-rendered charts.")
+            Paragraph::new("Press 'Space' to toggle display • 'O' to open chart in browser/viewer\n\nRun analyses (s, c, r, b, i) from the Analysis tab. Charts use ggplot2-style rendering.")
                 .block(Block::default().borders(Borders::ALL).title(" Visualizations "))
                 .wrap(Wrap { trim: false })
                 .render(area, f.buffer_mut());
@@ -427,6 +428,11 @@ impl App {
             }
             KeyCode::Char(' ') if self.tabs.active == Tab::Visualizations && self.input_mode == InputMode::Normal => {
                 self.tabs.viz.show_viz = !self.tabs.viz.show_viz;
+            }
+            KeyCode::Char('o') | KeyCode::Char('O') if self.tabs.active == Tab::Visualizations && self.input_mode == InputMode::Normal => {
+                if let Some(ref path) = self.tabs.viz.viz_svg_path {
+                    let _ = opener::open(path);
+                }
             }
             KeyCode::Enter if self.tabs.active == Tab::Analysis
                 && matches!(self.tabs.analysis.analysis_status, AnalysisStatus::PendingConfirm { .. })
@@ -557,6 +563,7 @@ impl App {
                         if let Ok(viz_data) = self.viz_engine.render(df, &viz_config) {
                             self.tabs.viz.viz_output = viz_data.terminal_output;
                             self.tabs.viz.viz_title = viz_data.title;
+                            self.tabs.viz.viz_svg_path = viz_data.svg_file_path;
                             self.tabs.viz.show_viz = true;
                         }
                     }

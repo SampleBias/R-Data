@@ -11,7 +11,7 @@ A powerful Rust-based data science agent with a Terminal User Interface (TUI) fo
   - Linear regression
   - Box plots
   - Histograms
-- **Visualizations**: Generate SVG-based charts using Plotters
+- **Visualizations**: ggplot2-style charts (light gray bg, steel blue/coral palette). Press **O** to open full-quality SVG in browser
   - Linear regression plots
   - Box plots
   - Histograms

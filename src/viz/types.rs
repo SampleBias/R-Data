@@ -54,6 +54,7 @@ pub enum VisualizationConfig {
 pub struct ChartData {
     pub chart_type: VisualizationType,
     pub svg_output: String,
+    pub svg_file_path: Option<std::path::PathBuf>,
     pub terminal_output: String,
     pub title: String,
 }
