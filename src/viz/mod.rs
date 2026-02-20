@@ -4,4 +4,4 @@ pub mod availability;
 
 pub use types::*;
 pub use engine::VisualizationEngine;
-pub use availability::{available_visualizations, VizAvailability};
+pub use availability::available_visualizations;

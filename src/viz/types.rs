@@ -60,7 +60,9 @@ pub struct ExpressionTrendConfig {
 pub struct YoungVsOldConfig {
     pub gene_column: String,
     pub age_columns: Vec<String>,
+    #[allow(dead_code)]
     pub young_ages: Vec<String>,
+    #[allow(dead_code)]
     pub old_ages: Vec<String>,
 }
 

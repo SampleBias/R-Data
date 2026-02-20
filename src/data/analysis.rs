@@ -300,6 +300,7 @@ pub struct YoungVsOldPoint {
 /// Age group box plot: one box per age column.
 #[derive(Debug, Clone)]
 pub struct AgeGroupBoxData {
+    #[allow(dead_code)]
     pub age_label: String,
     pub values: Vec<f64>,
 }

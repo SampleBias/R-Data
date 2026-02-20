@@ -10,6 +10,7 @@ pub enum AnalysisRequest {
     Histogram { column: String, bins: usize },
     BoxPlot { column: String },
     LinearRegression { x_column: String, y_column: String },
+    #[allow(dead_code)]
     Heatmap,
     ExpressionTrend {
         gene_ids: Vec<String>,
