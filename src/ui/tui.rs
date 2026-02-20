@@ -7,6 +7,7 @@ use crossterm::{
 use ratatui::{
     backend::Backend,
     prelude::*,
+    style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, Scrollbar, ScrollbarOrientation},
 };
 use std::time::Duration;
@@ -18,7 +19,7 @@ use crate::{
     viz::{VisualizationEngine},
     config::ConfigManager,
 };
-use super::components::{AppTabs, Tab};
+use super::components::{AppTabs, LoadStatus, Tab};
 
 pub struct App {
     tabs: AppTabs,
@@ -157,13 +158,25 @@ impl App {
         } else {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(4), Constraint::Length(10), Constraint::Min(0)].as_ref())
+                .constraints([Constraint::Length(3), Constraint::Length(4), Constraint::Length(10), Constraint::Min(0)].as_ref())
                 .split(area);
+
+            let (status_text, status_style) = match &self.tabs.data.load_status {
+                LoadStatus::Idle => ("Ready".to_string(), Style::default().fg(Color::DarkGray)),
+                LoadStatus::Loading => ("⏳ Loading...".to_string(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                LoadStatus::Success(msg) => (format!("✓ {}  (press any key to dismiss)", msg), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                LoadStatus::Error(msg) => (format!("✗ Failed: {}  (press any key to dismiss)", msg), Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            };
+            Paragraph::new(status_text)
+                .style(status_style)
+                .block(Block::default().borders(Borders::ALL).title(" Status "))
+                .wrap(Wrap { trim: false })
+                .render(chunks[0], f.buffer_mut());
 
             let load_hint = "Press L to load a file (CSV, JSON, or Excel .xlsx)";
             Paragraph::new(load_hint)
                 .block(Block::default().borders(Borders::ALL).title(" Load File "))
-                .render(chunks[0], f.buffer_mut());
+                .render(chunks[1], f.buffer_mut());
 
             Paragraph::new(
                 if self.tabs.data.file_path.is_empty() {
@@ -174,12 +187,12 @@ impl App {
             )
                 .block(Block::default().borders(Borders::ALL).title(" Current File "))
                 .wrap(Wrap { trim: false })
-                .render(chunks[1], f.buffer_mut());
+                .render(chunks[2], f.buffer_mut());
 
             let info_chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(10), Constraint::Min(0)].as_ref())
-                .split(chunks[2]);
+                .split(chunks[3]);
 
             Paragraph::new(self.tabs.data.dataframe_info.clone())
                 .block(Block::default().borders(Borders::ALL).title(" DataFrame Info "))
@@ -300,23 +313,36 @@ impl App {
                 self.input_mode = InputMode::Editing;
                 self.file_dialog_state = FileDialogState::AwaitingPath;
                 self.tabs.data.file_path_input.clear();
+                self.tabs.data.load_status = LoadStatus::Idle;
             }
             KeyCode::Enter if matches!(self.file_dialog_state, FileDialogState::AwaitingPath) => {
                 let path = self.tabs.data.file_path_input.trim().to_string();
                 if !path.is_empty() {
                     let expanded = shellexpand::tilde(&path).to_string();
-                    if let Ok(df) = DataLoader::load_dataframe(&expanded) {
-                        let info = DataLoader::get_column_info(&df);
-                        let preview = format!("{:.5}", df.head(Some(10)));
-                        
-                        self.dataframe = Some(df);
-                        self.column_info = info;
-                        self.tabs.data.file_path = expanded.clone();
-                        self.tabs.data.dataframe_info = self.column_info.iter()
-                            .map(|c| format!("{}: {} (nulls: {})", c.name, c.dtype, c.null_count))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        self.tabs.data.preview_data = preview;
+                    self.tabs.data.load_status = LoadStatus::Loading;
+                    match DataLoader::load_dataframe(&expanded) {
+                        Ok(df) => {
+                            let info = DataLoader::get_column_info(&df);
+                            let preview = format!("{:.5}", df.head(Some(10)));
+                            let row_count = df.height();
+
+                            self.dataframe = Some(df);
+                            self.column_info = info;
+                            self.tabs.data.file_path = expanded.clone();
+                            self.tabs.data.dataframe_info = self.column_info.iter()
+                                .map(|c| format!("{}: {} (nulls: {})", c.name, c.dtype, c.null_count))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            self.tabs.data.preview_data = preview;
+                            self.tabs.data.load_status = LoadStatus::Success(format!(
+                                "Loaded {} rows from {}",
+                                row_count,
+                                std::path::Path::new(&expanded).file_name().and_then(|n| n.to_str()).unwrap_or(&expanded)
+                            ));
+                        }
+                        Err(e) => {
+                            self.tabs.data.load_status = LoadStatus::Error(e.to_string());
+                        }
                     }
                 }
                 self.input_mode = InputMode::Normal;
@@ -337,6 +363,11 @@ impl App {
             }
             KeyCode::Char(' ') if self.tabs.active == Tab::Visualizations && self.input_mode == InputMode::Normal => {
                 self.tabs.viz.show_viz = !self.tabs.viz.show_viz;
+            }
+            _ if self.tabs.active == Tab::Data && self.input_mode == InputMode::Normal => {
+                if matches!(self.tabs.data.load_status, LoadStatus::Success(_) | LoadStatus::Error(_)) {
+                    self.tabs.data.load_status = LoadStatus::Idle;
+                }
             }
             KeyCode::Enter if self.tabs.active == Tab::AI && self.input_mode == InputMode::Normal => {
                 self.input_mode = InputMode::Editing;

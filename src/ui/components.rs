@@ -23,11 +23,20 @@ impl Tab {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoadStatus {
+    Idle,
+    Loading,
+    Success(String),
+    Error(String),
+}
+
 pub struct DataTab {
     pub file_path: String,
     pub file_path_input: String,  // Buffer when loading a file
     pub dataframe_info: String,
     pub preview_data: String,
+    pub load_status: LoadStatus,
 }
 
 impl Default for DataTab {
@@ -37,6 +46,7 @@ impl Default for DataTab {
             file_path_input: String::new(),
             dataframe_info: "No data loaded".to_string(),
             preview_data: "Load a CSV, JSON, or Excel (.xlsx) file to begin".to_string(),
+            load_status: LoadStatus::Idle,
         }
     }
 }
