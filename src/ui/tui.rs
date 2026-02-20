@@ -103,6 +103,13 @@ impl App {
                                     self.tabs.viz.viz_svg_path = viz_data.svg_file_path;
                                     self.tabs.viz.show_viz = true;
                                 }
+                            } else {
+                                let details = result.details.as_deref().unwrap_or("No details");
+                                self.tabs.viz.viz_output = details.to_string();
+                                self.tabs.viz.viz_title = result.summary;
+                                self.tabs.viz.viz_svg_path = None;
+                                self.tabs.viz.show_viz = true;
+                                self.tabs.active = Tab::Visualizations;
                             }
                         }
                         Err(e) => {
@@ -347,6 +354,17 @@ impl App {
         }
 
         match key.code {
+            KeyCode::Char('C') if self.input_mode == InputMode::Normal
+                && (self.tabs.active == Tab::Analysis || self.tabs.active == Tab::Visualizations)
+            => {
+                self.tabs.analysis.results.clear();
+                self.tabs.analysis.analysis_status = AnalysisStatus::Idle;
+                self.tabs.viz.viz_output.clear();
+                self.tabs.viz.viz_title.clear();
+                self.tabs.viz.viz_svg_path = None;
+                self.tabs.viz.show_viz = false;
+                self.pending_analysis = None;
+            }
             KeyCode::Tab => {
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
                     self.tabs.previous_tab();
@@ -467,7 +485,14 @@ impl App {
                             AnalysisStatus::PendingConfirm { request: "Correlation matrix".to_string() };
                     }
                     'r' if avail.map(|v| v.available).unwrap_or(false) => {
-                        if let Some(df) = &self.dataframe {
+                        if let Some(layout) = &self.data_layout {
+                            self.pending_analysis = Some(AnalysisRequest::GenesExpressionVsAge {
+                                gene_column: layout.gene_column.clone(),
+                                age_columns: layout.age_columns.clone(),
+                            });
+                            self.tabs.analysis.analysis_status =
+                                AnalysisStatus::PendingConfirm { request: "Expression vs age (all genes)".to_string() };
+                        } else if let Some(df) = &self.dataframe {
                             let numeric_cols: Vec<String> = df.get_columns()
                                 .iter()
                                 .filter(|c| c.dtype().is_numeric())
@@ -483,6 +508,16 @@ impl App {
                                 self.tabs.analysis.analysis_status =
                                     AnalysisStatus::PendingConfirm { request: format!("Linear regression: {} vs {}", x, y) };
                             }
+                        }
+                    }
+                    'g' if avail.map(|v| v.available).unwrap_or(false) => {
+                        if let Some(layout) = &self.data_layout {
+                            self.pending_analysis = Some(AnalysisRequest::GenesSignificantWithAge {
+                                gene_column: layout.gene_column.clone(),
+                                age_columns: layout.age_columns.clone(),
+                            });
+                            self.tabs.analysis.analysis_status =
+                                AnalysisStatus::PendingConfirm { request: "Genes significant with age (p<0.05)".to_string() };
                         }
                     }
                     'b' if avail.map(|v| v.available).unwrap_or(false) => {

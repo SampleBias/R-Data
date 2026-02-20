@@ -24,6 +24,16 @@ pub enum AnalysisRequest {
         gene_column: String,
         age_columns: Vec<String>,
     },
+    /// Expression vs age per gene (microarray). Linear regression: expression ~ age.
+    GenesExpressionVsAge {
+        gene_column: String,
+        age_columns: Vec<String>,
+    },
+    /// Genes statistically significant with age (p<0.05), positively or negatively correlated.
+    GenesSignificantWithAge {
+        gene_column: String,
+        age_columns: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -225,6 +235,91 @@ impl AnalysisRunner {
                     )),
                 })
             }
+            AnalysisRequest::GenesExpressionVsAge {
+                gene_column,
+                age_columns,
+            } => {
+                let results =
+                    crate::data::StatisticalAnalyzer::genes_expression_vs_age(
+                        df, &gene_column, &age_columns,
+                    )?;
+                let mut sorted = results.clone();
+                sorted.sort_by(|a, b| a.p_value.partial_cmp(&b.p_value).unwrap());
+                let n_sig_pos = sorted.iter().filter(|r| r.significant && r.correlation > 0.0).count();
+                let n_sig_neg = sorted.iter().filter(|r| r.significant && r.correlation < 0.0).count();
+                let summary = format!(
+                    "Expression vs age: {} genes. Significant (p<0.05): {} positive, {} negative",
+                    sorted.len(),
+                    n_sig_pos,
+                    n_sig_neg
+                );
+                let table = format_genes_age_table(&sorted, false);
+                Ok(AnalysisResult {
+                    summary: summary.clone(),
+                    details: Some(format!("{}\n\n{}", summary, table)),
+                    viz_config: None,
+                })
+            }
+            AnalysisRequest::GenesSignificantWithAge {
+                gene_column,
+                age_columns,
+            } => {
+                let results =
+                    crate::data::StatisticalAnalyzer::genes_expression_vs_age(
+                        df, &gene_column, &age_columns,
+                    )?;
+                let mut significant: Vec<_> = results.into_iter().filter(|r| r.significant).collect();
+                significant.sort_by(|a, b| a.p_value.partial_cmp(&b.p_value).unwrap());
+                let n_pos = significant.iter().filter(|r| r.correlation > 0.0).count();
+                let n_neg = significant.iter().filter(|r| r.correlation < 0.0).count();
+                let summary = format!(
+                    "Genes significant with age (p<0.05): {} total ({} positive, {} negative)",
+                    significant.len(),
+                    n_pos,
+                    n_neg
+                );
+                let table = format_genes_age_table(&significant, true);
+                Ok(AnalysisResult {
+                    summary: summary.clone(),
+                    details: Some(format!("{}\n\n{}", summary, table)),
+                    viz_config: None,
+                })
+            }
         }
     }
+}
+
+fn format_genes_age_table(
+    results: &[crate::data::GeneAgeCorrelation],
+    significant_only: bool,
+) -> String {
+    if results.is_empty() {
+        return if significant_only {
+            "No genes significant with age (p<0.05).".to_string()
+        } else {
+            "No results.".to_string()
+        };
+    }
+    let header = "Gene ID (Ensembl)     | Corr    | Slope   | R²     | p-value | Dir";
+    let sep = "---------------------|--------|--------|--------|---------|-----";
+    let mut lines = vec![header.to_string(), sep.to_string()];
+    for r in results.iter().take(100) {
+        let sig = if r.significant { "*" } else { " " };
+        lines.push(format!(
+            "{:<20} | {:>7.3} | {:>7.4} | {:>6.3} | {:>7.4} | {} {}",
+            r.gene_id.chars().take(20).collect::<String>(),
+            r.correlation,
+            r.slope,
+            r.r_squared,
+            r.p_value,
+            r.direction.chars().take(3).collect::<String>(),
+            sig
+        ));
+    }
+    if results.len() > 100 {
+        lines.push(format!("... and {} more", results.len() - 100));
+    }
+    lines.push("".to_string());
+    lines.push("* = significant (p<0.05)".to_string());
+    lines.join("\n")
 }

@@ -47,6 +47,7 @@ cargo run
 - `Tab` / `Shift+Tab` — Switch tabs (Data, Analysis, Visualizations)
 - `q` — Quit
 - `?` or `h` — Help
+- `C` — Clear analysis results and visualizations
 
 **Data Tab:**
 - `L` — Load file (CSV, JSON, Excel .xlsx)
@@ -57,7 +58,8 @@ cargo run
 - `c` — Correlation matrix
 - `h` — Histogram
 - `b` — Box plot
-- `r` — Linear regression
+- `r` — Expression vs age (microarray) or linear regression
+- `g` — Genes significant with age, p<0.05 (microarray)
 - `t` — Expression trend (microarray)
 - `v` — Young vs Old scatter (microarray)
 - `a` — Age group box plot (microarray)

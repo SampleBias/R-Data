@@ -304,6 +304,18 @@ pub struct AgeGroupBoxData {
     pub values: Vec<f64>,
 }
 
+/// Per-gene expression vs age: correlation, slope, p-value.
+#[derive(Debug, Clone)]
+pub struct GeneAgeCorrelation {
+    pub gene_id: String,
+    pub correlation: f64,
+    pub slope: f64,
+    pub r_squared: f64,
+    pub p_value: f64,
+    pub significant: bool,
+    pub direction: &'static str, // "positive" or "negative"
+}
+
 impl StatisticalAnalyzer {
     /// Expression vs age for selected gene(s). Returns (age, expression) points per gene.
     pub fn expression_trend(
@@ -435,5 +447,123 @@ impl StatisticalAnalyzer {
             });
         }
         Ok(result)
+    }
+
+    /// Per-gene expression vs age: correlation, slope, p-value. Identifies genes
+    /// statistically significant with age (positively or negatively correlated).
+    pub fn genes_expression_vs_age(
+        df: &DataFrame,
+        gene_column: &str,
+        age_columns: &[String],
+    ) -> Result<Vec<GeneAgeCorrelation>> {
+        let gene_series = df.column(gene_column)?.str()?;
+        let n_rows = df.height();
+        let mut result = Vec::new();
+
+        for row in 0..n_rows {
+            let gene_id = gene_series.get(row).unwrap_or("").to_string();
+            let mut x = Vec::new();
+            let mut y = Vec::new();
+            for col_name in age_columns {
+                let age: f64 = col_name.trim().parse().unwrap_or(f64::NAN);
+                if age.is_nan() {
+                    continue;
+                }
+                if let Ok(col) = df.column(col_name) {
+                    if let Ok(f64_col) = col.f64() {
+                        if let Some(expr) = f64_col.get(row) {
+                            x.push(age);
+                            y.push(expr);
+                        }
+                    }
+                }
+            }
+
+            if x.len() < 3 {
+                continue;
+            }
+
+            let (correlation, slope, r_squared, p_value) =
+                Self::correlation_and_regression(&x, &y)?;
+            let significant = p_value < 0.05;
+            let direction = if correlation > 0.0 {
+                "positive"
+            } else {
+                "negative"
+            };
+
+            result.push(GeneAgeCorrelation {
+                gene_id,
+                correlation,
+                slope,
+                r_squared,
+                p_value,
+                significant,
+                direction,
+            });
+        }
+        Ok(result)
+    }
+
+    fn correlation_and_regression(
+        x: &[f64],
+        y: &[f64],
+    ) -> Result<(f64, f64, f64, f64)> {
+        let n = x.len() as f64;
+        if n < 2.0 {
+            return Ok((0.0, 0.0, 0.0, 1.0));
+        }
+        let sum_x: f64 = x.iter().sum();
+        let sum_y: f64 = y.iter().sum();
+        let sum_xy: f64 = x.iter().zip(y.iter()).map(|(a, b)| a * b).sum();
+        let sum_x2: f64 = x.iter().map(|a| a * a).sum();
+        let sum_y2: f64 = y.iter().map(|a| a * a).sum();
+
+        let numerator = n * sum_xy - sum_x * sum_y;
+        let denom = ((n * sum_x2 - sum_x * sum_x) * (n * sum_y2 - sum_y * sum_y)).sqrt();
+        let correlation = if denom == 0.0 {
+            0.0
+        } else {
+            (numerator / denom).clamp(-1.0, 1.0)
+        };
+
+        let slope = if (n * sum_x2 - sum_x * sum_x) == 0.0 {
+            0.0
+        } else {
+            (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x)
+        };
+        let intercept = (sum_y - slope * sum_x) / n;
+
+        let y_pred: Vec<f64> = x.iter().map(|xi| slope * xi + intercept).collect();
+        let ss_res: f64 = y.iter().zip(y_pred.iter()).map(|(yi, yp)| (yi - yp).powi(2)).sum();
+        let ss_tot: f64 = y
+            .iter()
+            .map(|yi| (yi - sum_y / n).powi(2))
+            .sum();
+        let r_squared = if ss_tot == 0.0 {
+            1.0
+        } else {
+            (1.0 - ss_res / ss_tot).max(0.0)
+        };
+
+        let df_val = (n - 2.0).max(1.0);
+        let t_stat = if correlation.abs() >= 1.0 {
+            f64::INFINITY
+        } else {
+            correlation * (df_val / (1.0 - correlation * correlation)).sqrt()
+        };
+        let p_value = Self::t_to_p_value(t_stat.abs(), df_val as usize);
+
+        Ok((correlation, slope, r_squared, p_value))
+    }
+
+    fn t_to_p_value(t: f64, df: usize) -> f64 {
+        use statrs::distribution::{ContinuousCDF, StudentsT};
+        let dist = match StudentsT::new(0.0, 1.0, df as f64) {
+            Ok(d) => d,
+            Err(_) => return 1.0,
+        };
+        let p_one_tail: f64 = 1.0 - dist.cdf(t);
+        2.0 * p_one_tail.min(1.0 - p_one_tail)
     }
 }

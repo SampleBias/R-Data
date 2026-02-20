@@ -556,10 +556,16 @@ impl VisualizationEngine {
                 .into_drawing_area();
             root.fill(&BG_LIGHT_GRAY)?;
 
+            let gene_labels_str: String = trend_data.iter().map(|d| d.gene_id.as_str()).collect::<Vec<_>>().join(", ");
+            let caption = if gene_labels_str.len() > 70 {
+                format!("Expression vs Age: {}...", &gene_labels_str[..67])
+            } else {
+                format!("Expression vs Age: {}", gene_labels_str)
+            };
             let mut chart = ChartBuilder::on(&root)
                 .caption(
-                    "Expression vs Age",
-                    ("sans-serif", 28).into_font().color(&BLACK),
+                    caption,
+                    ("sans-serif", 22).into_font().color(&BLACK),
                 )
                 .x_label_area_size(50)
                 .y_label_area_size(50)
@@ -596,9 +602,11 @@ impl VisualizationEngine {
             }
         }
 
+        let gene_labels: Vec<&str> = trend_data.iter().map(|d| d.gene_id.as_str()).collect();
         let terminal_output = format!(
-            "Expression Trend: {} gene(s)\n  Ages: {:.0}-{:.0}",
+            "Expression Trend: {} gene(s)\n  Genes: {}\n  Ages: {:.0}-{:.0}",
             trend_data.len(),
+            gene_labels.join(", "),
             x_min,
             x_max
         );
@@ -675,9 +683,11 @@ impl VisualizationEngine {
             )))?;
         }
 
+        let sample_ids: Vec<&str> = points.iter().take(5).map(|p| p.gene_id.as_str()).collect();
         let terminal_output = format!(
-            "Young vs Old: {} genes\n  Diagonal = no change",
-            points.len()
+            "Young vs Old: {} genes\n  Sample: {}\n  Diagonal = no change",
+            points.len(),
+            sample_ids.join(", ")
         );
         let svg_file_path = Self::save_svg_to_temp(&buffer, "rdata-youngold").ok();
         Ok(ChartData {

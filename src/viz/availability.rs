@@ -77,10 +77,22 @@ pub fn available_visualizations(
         },
         VizAvailability {
             key: 'r',
-            label: "Linear regression".to_string(),
-            available: numeric_count >= 2,
-            reason: if numeric_count < 2 {
-                Some("need ≥2 numeric columns".to_string())
+            label: "Expression vs age (linear regression)".to_string(),
+            available: has_layout || numeric_count >= 2,
+            reason: if has_layout {
+                None
+            } else if numeric_count < 2 {
+                Some("need microarray layout or ≥2 numeric columns".to_string())
+            } else {
+                None
+            },
+        },
+        VizAvailability {
+            key: 'g',
+            label: "Genes significant with age (p<0.05)".to_string(),
+            available: has_layout,
+            reason: if !has_layout {
+                Some("no microarray layout".to_string())
             } else {
                 None
             },
