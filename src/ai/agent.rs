@@ -5,6 +5,7 @@ use crate::data::DataLoader;
 use crate::viz::{VisualizationEngine, VisualizationConfig};
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum AnalysisRequest {
     SummaryStats,
     Correlation,
@@ -22,6 +23,7 @@ pub struct AnalysisResult {
     pub viz_config: Option<VisualizationConfig>,
 }
 
+#[allow(dead_code)]
 pub struct AIAgent {
     client: Option<Arc<AIClient>>,
     viz_engine: Arc<VisualizationEngine>,
@@ -36,6 +38,7 @@ impl AIAgent {
         }
     }
 
+    #[allow(dead_code)]
     pub fn has_ai(&self) -> bool {
         self.client.is_some()
     }

@@ -13,6 +13,7 @@ pub enum Tab {
 }
 
 impl Tab {
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &str {
         match self {
             Tab::Data => "Data",
@@ -51,6 +52,7 @@ impl Default for DataTab {
     }
 }
 
+#[allow(dead_code)]
 pub struct AnalysisTab {
     pub results: Vec<String>,
     pub selected_result: usize,

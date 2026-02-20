@@ -1,14 +1,10 @@
 use anyhow::Result;
-use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-    execute,
-};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     backend::Backend,
     prelude::*,
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, Scrollbar, ScrollbarOrientation},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -44,6 +40,7 @@ enum FileDialogState {
     AwaitingPath,
 }
 
+#[allow(dead_code)]
 pub enum AppEvent {
     LoadData(String),
     Analysis(AnalysisRequest),

@@ -243,6 +243,7 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RegressionResult {
     pub slope: f64,
     pub intercept: f64,
@@ -253,6 +254,7 @@ pub struct RegressionResult {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct HistogramData {
     pub col_name: String,
     pub min_val: f64,
@@ -262,6 +264,7 @@ pub struct HistogramData {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct BoxplotData {
     pub col_name: String,
     pub min: f64,

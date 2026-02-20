@@ -50,6 +50,7 @@ pub enum VisualizationConfig {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ChartData {
     pub chart_type: VisualizationType,
     pub svg_output: String,
