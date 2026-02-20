@@ -9,6 +9,10 @@ pub enum VisualizationType {
     ExpressionTrend,
     YoungVsOldScatter,
     AgeGroupBoxPlot,
+    CorrelationScatter,
+    CorrelationBarChart,
+    VolcanoPlot,
+    ExpressionVsAgeRegression,
 }
 
 impl fmt::Display for VisualizationType {
@@ -21,6 +25,10 @@ impl fmt::Display for VisualizationType {
             VisualizationType::ExpressionTrend => write!(f, "Expression Trend"),
             VisualizationType::YoungVsOldScatter => write!(f, "Young vs Old Scatter"),
             VisualizationType::AgeGroupBoxPlot => write!(f, "Age Group Box Plot"),
+            VisualizationType::CorrelationScatter => write!(f, "Correlation vs p-value Scatter"),
+            VisualizationType::CorrelationBarChart => write!(f, "Top Genes by |Correlation|"),
+            VisualizationType::VolcanoPlot => write!(f, "Volcano Plot"),
+            VisualizationType::ExpressionVsAgeRegression => write!(f, "Expression vs Age (Regression)"),
         }
     }
 }
@@ -73,6 +81,43 @@ pub struct AgeGroupBoxPlotConfig {
     pub age_columns: Vec<String>,
 }
 
+/// Point for correlation-based charts (scatter, bar, volcano).
+#[derive(Debug, Clone)]
+pub struct GeneCorrelationPoint {
+    pub gene_id: String,
+    pub correlation: f64,
+    pub p_value: f64,
+    pub significant: bool,
+    pub direction: String,
+}
+
+/// Scatter: correlation vs -log10(p-value), colored by direction.
+#[derive(Debug, Clone)]
+pub struct CorrelationScatterConfig {
+    pub points: Vec<GeneCorrelationPoint>,
+}
+
+/// Bar chart: top N genes by |correlation|, Ensembl IDs on axis.
+#[derive(Debug, Clone)]
+pub struct CorrelationBarChartConfig {
+    pub points: Vec<GeneCorrelationPoint>,
+    pub top_n: usize,
+}
+
+/// Volcano: -log10(p-value) vs correlation.
+#[derive(Debug, Clone)]
+pub struct VolcanoPlotConfig {
+    pub points: Vec<GeneCorrelationPoint>,
+}
+
+/// Expression vs age with regression line(s). 1–5 genes.
+#[derive(Debug, Clone)]
+pub struct ExpressionVsAgeRegressionConfig {
+    pub gene_ids: Vec<String>,
+    pub gene_column: String,
+    pub age_columns: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum VisualizationConfig {
     Histogram(HistogramConfig),
@@ -82,6 +127,10 @@ pub enum VisualizationConfig {
     ExpressionTrend(ExpressionTrendConfig),
     YoungVsOldScatter(YoungVsOldConfig),
     AgeGroupBoxPlot(AgeGroupBoxPlotConfig),
+    CorrelationScatter(CorrelationScatterConfig),
+    CorrelationBarChart(CorrelationBarChartConfig),
+    VolcanoPlot(VolcanoPlotConfig),
+    ExpressionVsAgeRegression(ExpressionVsAgeRegressionConfig),
 }
 
 #[derive(Debug, Clone)]

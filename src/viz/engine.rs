@@ -53,6 +53,12 @@ impl VisualizationEngine {
             VisualizationConfig::ExpressionTrend(cfg) => self.render_expression_trend(df, cfg),
             VisualizationConfig::YoungVsOldScatter(cfg) => self.render_young_vs_old(df, cfg),
             VisualizationConfig::AgeGroupBoxPlot(cfg) => self.render_age_group_boxplot(df, cfg),
+            VisualizationConfig::CorrelationScatter(cfg) => self.render_correlation_scatter(cfg),
+            VisualizationConfig::CorrelationBarChart(cfg) => self.render_correlation_bar_chart(cfg),
+            VisualizationConfig::VolcanoPlot(cfg) => self.render_volcano_plot(cfg),
+            VisualizationConfig::ExpressionVsAgeRegression(cfg) => {
+                self.render_expression_vs_age_regression(df, cfg)
+            }
         }
     }
 
@@ -810,6 +816,365 @@ impl VisualizationEngine {
             svg_file_path,
             terminal_output,
             title: "Expression by Age".to_string(),
+        })
+    }
+
+    fn render_correlation_scatter(&self, config: &CorrelationScatterConfig) -> Result<ChartData> {
+        if config.points.is_empty() {
+            return Ok(ChartData {
+                chart_type: VisualizationType::CorrelationScatter,
+                svg_output: "No data".to_string(),
+                svg_file_path: None,
+                terminal_output: "No correlation data".to_string(),
+                title: "Correlation vs p-value".to_string(),
+            });
+        }
+        let log_p = |p: f64| -(p.max(1e-10)).log10();
+        let x: Vec<f64> = config.points.iter().map(|p| p.correlation).collect();
+        let y: Vec<f64> = config.points.iter().map(|p| log_p(p.p_value)).collect();
+        let x_min = x.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let x_max = x.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let y_min = y.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let y_max = y.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let x_range = (x_max - x_min).max(0.2);
+        let y_range = (y_max - y_min).max(0.2);
+
+        let mut buffer = String::new();
+        {
+            let root = SVGBackend::with_string(&mut buffer, (self.width, self.height))
+                .into_drawing_area();
+            root.fill(&BG_LIGHT_GRAY)?;
+
+            let mut chart = ChartBuilder::on(&root)
+                .caption(
+                    "Correlation vs -log10(p-value)",
+                    ("sans-serif", 24).into_font().color(&BLACK),
+                )
+                .x_label_area_size(50)
+                .y_label_area_size(50)
+                .margin(12)
+                .build_cartesian_2d(
+                    (x_min - 0.05 * x_range)..(x_max + 0.05 * x_range),
+                    (y_min - 0.05 * y_range)..(y_max + 0.05 * y_range),
+                )?;
+
+            chart
+                .configure_mesh()
+                .axis_style(GRID_GRAY.stroke_width(1))
+                .x_desc("Correlation")
+                .y_desc("-log10(p-value)")
+                .draw()?;
+
+            let pos_points: Vec<_> = config.points.iter().filter(|p| p.direction == "positive").collect();
+            let neg_points: Vec<_> = config.points.iter().filter(|p| p.direction == "negative").collect();
+            chart.draw_series(pos_points.iter().map(|p| {
+                Circle::new((p.correlation, log_p(p.p_value)), 4, CORAL.filled())
+            }))?;
+            chart.draw_series(neg_points.iter().map(|p| {
+                Circle::new((p.correlation, log_p(p.p_value)), 4, STEEL_BLUE.filled())
+            }))?;
+            if config.points.len() <= 50 {
+                for p in config.points.iter().filter(|p| p.significant) {
+                    chart.draw_series(std::iter::once(Text::new(
+                        p.gene_id.chars().take(12).collect::<String>(),
+                        (p.correlation, log_p(p.p_value)),
+                        ("sans-serif", 10).into_font().color(&BLACK),
+                    )))?;
+                }
+            }
+        }
+
+        let terminal_output = format!(
+            "Correlation Scatter: {} genes (red=positive, blue=negative)",
+            config.points.len()
+        );
+        let svg_file_path = Self::save_svg_to_temp(&buffer, "rdata-corr-scatter").ok();
+        Ok(ChartData {
+            chart_type: VisualizationType::CorrelationScatter,
+            svg_output: buffer,
+            svg_file_path,
+            terminal_output,
+            title: "Correlation vs -log10(p-value)".to_string(),
+        })
+    }
+
+    fn render_correlation_bar_chart(&self, config: &CorrelationBarChartConfig) -> Result<ChartData> {
+        let top: Vec<_> = config
+            .points
+            .iter()
+            .map(|p| (p.gene_id.clone(), p.correlation.abs()))
+            .collect::<Vec<_>>();
+        let mut sorted = top.clone();
+        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let take_n = config.top_n.min(sorted.len());
+        let bars: Vec<_> = sorted.into_iter().take(take_n).collect();
+
+        if bars.is_empty() {
+            return Ok(ChartData {
+                chart_type: VisualizationType::CorrelationBarChart,
+                svg_output: "No data".to_string(),
+                svg_file_path: None,
+                terminal_output: "No data".to_string(),
+                title: "Top Genes by |Correlation|".to_string(),
+            });
+        }
+
+        let max_val = bars.iter().map(|(_, v)| *v).fold(0.0f64, f64::max).max(0.1);
+        let n = bars.len() as f64;
+
+        let mut buffer = String::new();
+        {
+            let root = SVGBackend::with_string(&mut buffer, (self.width, self.height))
+                .into_drawing_area();
+            root.fill(&BG_LIGHT_GRAY)?;
+
+            let mut chart = ChartBuilder::on(&root)
+                .caption(
+                    "Top Genes by |Correlation|",
+                    ("sans-serif", 24).into_font().color(&BLACK),
+                )
+                .x_label_area_size(80)
+                .y_label_area_size(50)
+                .margin(12)
+                .build_cartesian_2d(0.0..(n + 1.0), 0.0..(max_val * 1.1))?;
+
+            chart
+                .configure_mesh()
+                .axis_style(GRID_GRAY.stroke_width(1))
+                .x_desc("Gene ID (Ensembl)")
+                .y_desc("|Correlation|")
+                .draw()?;
+
+            for (i, (gene_id, val)) in bars.iter().enumerate() {
+                let x = i as f64;
+                chart.draw_series(std::iter::once(Rectangle::new(
+                    [(x, 0.0), (x + 1.0, *val)],
+                    STEEL_BLUE.filled(),
+                )))?;
+                chart.draw_series(std::iter::once(Text::new(
+                    gene_id.chars().take(14).collect::<String>(),
+                    (x + 0.5, 0.0),
+                    ("sans-serif", 9).into_font().color(&BLACK),
+                )))?;
+            }
+        }
+
+        let terminal_output = format!(
+            "Top {} genes by |correlation|\n  {}",
+            take_n,
+            bars.iter().map(|(g, _)| g.as_str()).take(5).collect::<Vec<_>>().join(", ")
+        );
+        let svg_file_path = Self::save_svg_to_temp(&buffer, "rdata-corr-bar").ok();
+        Ok(ChartData {
+            chart_type: VisualizationType::CorrelationBarChart,
+            svg_output: buffer,
+            svg_file_path,
+            terminal_output,
+            title: "Top Genes by |Correlation|".to_string(),
+        })
+    }
+
+    fn render_volcano_plot(&self, config: &VolcanoPlotConfig) -> Result<ChartData> {
+        if config.points.is_empty() {
+            return Ok(ChartData {
+                chart_type: VisualizationType::VolcanoPlot,
+                svg_output: "No data".to_string(),
+                svg_file_path: None,
+                terminal_output: "No data".to_string(),
+                title: "Volcano Plot".to_string(),
+            });
+        }
+        let log_p = |p: f64| -(p.max(1e-10)).log10();
+        let x: Vec<f64> = config.points.iter().map(|p| p.correlation).collect();
+        let y: Vec<f64> = config.points.iter().map(|p| log_p(p.p_value)).collect();
+        let x_min = x.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let x_max = x.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let y_min = y.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let y_max = y.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let x_range = (x_max - x_min).max(0.2);
+        let y_range = (y_max - y_min).max(0.2);
+
+        let mut buffer = String::new();
+        {
+            let root = SVGBackend::with_string(&mut buffer, (self.width, self.height))
+                .into_drawing_area();
+            root.fill(&BG_LIGHT_GRAY)?;
+
+            let mut chart = ChartBuilder::on(&root)
+                .caption(
+                    "Volcano: -log10(p) vs Correlation",
+                    ("sans-serif", 24).into_font().color(&BLACK),
+                )
+                .x_label_area_size(50)
+                .y_label_area_size(50)
+                .margin(12)
+                .build_cartesian_2d(
+                    (x_min - 0.05 * x_range)..(x_max + 0.05 * x_range),
+                    (y_min - 0.05 * y_range)..(y_max + 0.05 * y_range),
+                )?;
+
+            chart
+                .configure_mesh()
+                .axis_style(GRID_GRAY.stroke_width(1))
+                .x_desc("Correlation")
+                .y_desc("-log10(p-value)")
+                .draw()?;
+
+            for p in &config.points {
+                let color = if p.direction == "positive" {
+                    CORAL.filled()
+                } else {
+                    STEEL_BLUE.filled()
+                };
+                chart.draw_series(std::iter::once(Circle::new(
+                    (p.correlation, log_p(p.p_value)),
+                    3,
+                    color,
+                )))?;
+            }
+            if config.points.len() <= 80 {
+                for p in &config.points {
+                    if p.significant {
+                        chart.draw_series(std::iter::once(Text::new(
+                            p.gene_id.chars().take(12).collect::<String>(),
+                            (p.correlation, log_p(p.p_value)),
+                            ("sans-serif", 8).into_font().color(&BLACK),
+                        )))?;
+                    }
+                }
+            }
+        }
+
+        let terminal_output = format!(
+            "Volcano: {} genes (red=positive, blue=negative)",
+            config.points.len()
+        );
+        let svg_file_path = Self::save_svg_to_temp(&buffer, "rdata-volcano").ok();
+        Ok(ChartData {
+            chart_type: VisualizationType::VolcanoPlot,
+            svg_output: buffer,
+            svg_file_path,
+            terminal_output,
+            title: "Volcano Plot".to_string(),
+        })
+    }
+
+    fn render_expression_vs_age_regression(
+        &self,
+        df: &DataFrame,
+        config: &ExpressionVsAgeRegressionConfig,
+    ) -> Result<ChartData> {
+        let trend_data = StatisticalAnalyzer::expression_trend(
+            df,
+            &config.gene_column,
+            &config.age_columns,
+            &config.gene_ids,
+        )?;
+        if trend_data.is_empty() {
+            return Ok(ChartData {
+                chart_type: VisualizationType::ExpressionVsAgeRegression,
+                svg_output: "No data".to_string(),
+                svg_file_path: None,
+                terminal_output: "No data".to_string(),
+                title: "Expression vs Age (Regression)".to_string(),
+            });
+        }
+
+        let mut all_x = Vec::new();
+        let mut all_y = Vec::new();
+        for d in &trend_data {
+            for p in &d.points {
+                all_x.push(p.age);
+                all_y.push(p.expression);
+            }
+        }
+        let x_min = all_x.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let x_max = all_x.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let y_min = all_y.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let y_max = all_y.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let x_range = (x_max - x_min).max(0.1);
+        let y_range = (y_max - y_min).max(0.1);
+
+        let mut buffer = String::new();
+        {
+            let root = SVGBackend::with_string(&mut buffer, (self.width, self.height))
+                .into_drawing_area();
+            root.fill(&BG_LIGHT_GRAY)?;
+
+            let mut chart = ChartBuilder::on(&root)
+                .caption(
+                    "Expression vs Age (Regression)",
+                    ("sans-serif", 22).into_font().color(&BLACK),
+                )
+                .x_label_area_size(50)
+                .y_label_area_size(50)
+                .margin(12)
+                .build_cartesian_2d(
+                    (x_min - 0.05 * x_range)..(x_max + 0.05 * x_range),
+                    (y_min - 0.05 * y_range)..(y_max + 0.05 * y_range),
+                )?;
+
+            chart
+                .configure_mesh()
+                .axis_style(GRID_GRAY.stroke_width(1))
+                .x_desc("Age")
+                .y_desc("Expression")
+                .draw()?;
+
+            let colors = [&STEEL_BLUE, &CORAL, &GREEN, &RED, &BLUE];
+            for (i, data) in trend_data.iter().enumerate() {
+                let color = colors[i % colors.len()];
+                let x_vals: Vec<f64> = data.points.iter().map(|p| p.age).collect();
+                let y_vals: Vec<f64> = data.points.iter().map(|p| p.expression).collect();
+                let points: Vec<(f64, f64)> = x_vals.iter().zip(y_vals.iter()).map(|(a, b)| (*a, *b)).collect();
+                chart.draw_series(
+                    points
+                        .iter()
+                        .map(|&(x, y)| Circle::new((x, y), 5, color.filled())),
+                )?;
+                let n = x_vals.len() as f64;
+                let sum_x: f64 = x_vals.iter().sum();
+                let sum_y: f64 = y_vals.iter().sum();
+                let sum_xy: f64 = x_vals.iter().zip(y_vals.iter()).map(|(a, b)| a * b).sum();
+                let sum_x2: f64 = x_vals.iter().map(|a| a * a).sum();
+                let slope = if (n * sum_x2 - sum_x * sum_x).abs() < 1e-10 {
+                    0.0
+                } else {
+                    (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x)
+                };
+                let intercept = (sum_y - slope * sum_x) / n;
+                let line_start = x_min - 0.05 * x_range;
+                let line_end = x_max + 0.05 * x_range;
+                chart.draw_series(std::iter::once(PathElement::new(
+                    vec![
+                        (line_start, slope * line_start + intercept),
+                        (line_end, slope * line_end + intercept),
+                    ],
+                    color.stroke_width(2),
+                )))?;
+                let label_x = points.last().map(|p| p.0).unwrap_or(x_max);
+                let label_y = points.last().map(|p| p.1).unwrap_or(y_max);
+                chart.draw_series(std::iter::once(Text::new(
+                    data.gene_id.chars().take(14).collect::<String>(),
+                    (label_x, label_y),
+                    ("sans-serif", 10).into_font().color(color),
+                )))?;
+            }
+        }
+
+        let gene_labels: String = trend_data.iter().map(|d| d.gene_id.as_str()).collect::<Vec<_>>().join(", ");
+        let terminal_output = format!(
+            "Expression vs Age (Regression): {}\n  Genes: {}",
+            trend_data.len(),
+            gene_labels
+        );
+        let svg_file_path = Self::save_svg_to_temp(&buffer, "rdata-regression").ok();
+        Ok(ChartData {
+            chart_type: VisualizationType::ExpressionVsAgeRegression,
+            svg_output: buffer,
+            svg_file_path,
+            terminal_output,
+            title: "Expression vs Age (Regression)".to_string(),
         })
     }
 }

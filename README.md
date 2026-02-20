@@ -60,7 +60,11 @@ cargo run
 - `b` — Box plot
 - `r` — Expression vs age (microarray) or linear regression
 - `g` — Genes significant with age, p<0.05 (microarray)
-- `t` — Expression trend (microarray)
+- `t` — Expression trend (select genes, ★ to select)
+- `e` — Expression vs age regression (select 1-5 genes)
+- `1` — Volcano plot
+- `2` — Correlation scatter
+- `3` — Top genes bar chart
 - `v` — Young vs Old scatter (microarray)
 - `a` — Age group box plot (microarray)
 - `Enter` — Confirm and run selected analysis

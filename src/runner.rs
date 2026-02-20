@@ -35,6 +35,25 @@ pub enum AnalysisRequest {
         gene_column: String,
         age_columns: Vec<String>,
     },
+    GenesCorrelationScatter {
+        gene_column: String,
+        age_columns: Vec<String>,
+    },
+    GenesCorrelationBarChart {
+        gene_column: String,
+        age_columns: Vec<String>,
+        top_n: usize,
+    },
+    GenesVolcanoPlot {
+        gene_column: String,
+        age_columns: Vec<String>,
+    },
+    /// Expression vs age regression for 1–5 selected genes.
+    ExpressionVsAgeRegression {
+        gene_ids: Vec<String>,
+        gene_column: String,
+        age_columns: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -170,6 +189,31 @@ impl AnalysisRunner {
                     )),
                 })
             }
+            AnalysisRequest::ExpressionVsAgeRegression {
+                gene_ids,
+                gene_column,
+                age_columns,
+            } => {
+                let trend_data =
+                    crate::data::StatisticalAnalyzer::expression_trend(
+                        df, &gene_column, &age_columns, &gene_ids,
+                    )?;
+                let summary = format!(
+                    "Expression vs age regression: {} gene(s)",
+                    trend_data.len()
+                );
+                Ok(AnalysisResult {
+                    summary: summary.clone(),
+                    details: Some(summary),
+                    viz_config: Some(VisualizationConfig::ExpressionVsAgeRegression(
+                        crate::viz::ExpressionVsAgeRegressionConfig {
+                            gene_ids,
+                            gene_column,
+                            age_columns,
+                        },
+                    )),
+                })
+            }
             AnalysisRequest::YoungVsOld {
                 gene_column,
                 age_columns,
@@ -255,10 +299,13 @@ impl AnalysisRunner {
                     n_sig_neg
                 );
                 let table = format_genes_age_table(&sorted, false);
+                let points = to_gene_correlation_points(&sorted);
                 Ok(AnalysisResult {
                     summary: summary.clone(),
                     details: Some(format!("{}\n\n{}", summary, table)),
-                    viz_config: None,
+                    viz_config: Some(VisualizationConfig::VolcanoPlot(
+                        crate::viz::VolcanoPlotConfig { points },
+                    )),
                 })
             }
             AnalysisRequest::GenesSignificantWithAge {
@@ -280,14 +327,94 @@ impl AnalysisRunner {
                     n_neg
                 );
                 let table = format_genes_age_table(&significant, true);
+                let points = to_gene_correlation_points(&significant);
                 Ok(AnalysisResult {
                     summary: summary.clone(),
                     details: Some(format!("{}\n\n{}", summary, table)),
-                    viz_config: None,
+                    viz_config: Some(VisualizationConfig::VolcanoPlot(
+                        crate::viz::VolcanoPlotConfig { points },
+                    )),
+                })
+            }
+            AnalysisRequest::GenesCorrelationScatter {
+                gene_column,
+                age_columns,
+            } => {
+                let results =
+                    crate::data::StatisticalAnalyzer::genes_expression_vs_age(
+                        df, &gene_column, &age_columns,
+                    )?;
+                let mut sorted = results.clone();
+                sorted.sort_by(|a, b| a.p_value.partial_cmp(&b.p_value).unwrap());
+                let points = to_gene_correlation_points(&sorted);
+                let summary = format!("Correlation scatter: {} genes", points.len());
+                Ok(AnalysisResult {
+                    summary: summary.clone(),
+                    details: Some(summary),
+                    viz_config: Some(VisualizationConfig::CorrelationScatter(
+                        crate::viz::CorrelationScatterConfig { points },
+                    )),
+                })
+            }
+            AnalysisRequest::GenesCorrelationBarChart {
+                gene_column,
+                age_columns,
+                top_n,
+            } => {
+                let results =
+                    crate::data::StatisticalAnalyzer::genes_expression_vs_age(
+                        df, &gene_column, &age_columns,
+                    )?;
+                let mut sorted = results.clone();
+                sorted.sort_by(|a, b| a.correlation.abs().partial_cmp(&b.correlation.abs()).unwrap());
+                sorted.reverse();
+                let points = to_gene_correlation_points(&sorted);
+                let summary = format!("Top {} genes by |correlation|", top_n.min(points.len()));
+                Ok(AnalysisResult {
+                    summary: summary.clone(),
+                    details: Some(summary),
+                    viz_config: Some(VisualizationConfig::CorrelationBarChart(
+                        crate::viz::CorrelationBarChartConfig { points, top_n },
+                    )),
+                })
+            }
+            AnalysisRequest::GenesVolcanoPlot {
+                gene_column,
+                age_columns,
+            } => {
+                let results =
+                    crate::data::StatisticalAnalyzer::genes_expression_vs_age(
+                        df, &gene_column, &age_columns,
+                    )?;
+                let mut sorted = results.clone();
+                sorted.sort_by(|a, b| a.p_value.partial_cmp(&b.p_value).unwrap());
+                let points = to_gene_correlation_points(&sorted);
+                let summary = format!("Volcano plot: {} genes", points.len());
+                Ok(AnalysisResult {
+                    summary: summary.clone(),
+                    details: Some(summary),
+                    viz_config: Some(VisualizationConfig::VolcanoPlot(
+                        crate::viz::VolcanoPlotConfig { points },
+                    )),
                 })
             }
         }
     }
+}
+
+fn to_gene_correlation_points(
+    results: &[crate::data::GeneAgeCorrelation],
+) -> Vec<crate::viz::GeneCorrelationPoint> {
+    results
+        .iter()
+        .map(|r| crate::viz::GeneCorrelationPoint {
+            gene_id: r.gene_id.clone(),
+            correlation: r.correlation,
+            p_value: r.p_value,
+            significant: r.significant,
+            direction: r.direction.to_string(),
+        })
+        .collect()
 }
 
 fn format_genes_age_table(

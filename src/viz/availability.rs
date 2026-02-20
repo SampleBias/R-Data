@@ -129,5 +129,45 @@ pub fn available_visualizations(
                 None
             },
         },
+        VizAvailability {
+            key: '1',
+            label: "Volcano plot".to_string(),
+            available: has_layout,
+            reason: if !has_layout {
+                Some("no microarray layout".to_string())
+            } else {
+                None
+            },
+        },
+        VizAvailability {
+            key: '2',
+            label: "Correlation scatter".to_string(),
+            available: has_layout,
+            reason: if !has_layout {
+                Some("no microarray layout".to_string())
+            } else {
+                None
+            },
+        },
+        VizAvailability {
+            key: '3',
+            label: "Top genes bar chart".to_string(),
+            available: has_layout,
+            reason: if !has_layout {
+                Some("no microarray layout".to_string())
+            } else {
+                None
+            },
+        },
+        VizAvailability {
+            key: 'e',
+            label: "Expression vs age regression (select genes)".to_string(),
+            available: has_layout,
+            reason: if !has_layout {
+                Some("no microarray layout".to_string())
+            } else {
+                None
+            },
+        },
     ]
 }
