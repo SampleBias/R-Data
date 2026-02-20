@@ -101,7 +101,7 @@ impl App {
                                 AnalysisStatus::Success("Analysis completed".to_string());
                             if let Some(viz_config) = result.viz_config {
                                 if let Ok(viz_data) = self.viz_engine.render(df, &viz_config) {
-                                    self.tabs.viz.viz_output = viz_data.svg_output;
+                                    self.tabs.viz.viz_output = viz_data.terminal_output;
                                     self.tabs.viz.viz_title = viz_data.title;
                                     self.tabs.viz.show_viz = true;
                                 }
@@ -291,18 +291,14 @@ impl App {
 
     fn render_viz_tab(&self, f: &mut Frame, area: Rect) {
         if self.tabs.viz.show_viz && !self.tabs.viz.viz_output.is_empty() {
-            let viz_text = if self.tabs.viz.viz_output.len() > 10000 {
-                format!("{}...(truncated)", &self.tabs.viz.viz_output[..10000])
-            } else {
-                self.tabs.viz.viz_output.clone()
-            };
+            let viz_text = self.tabs.viz.viz_output.clone();
             
             Paragraph::new(viz_text)
                 .block(Block::default().borders(Borders::ALL).title(self.tabs.viz.viz_title.clone()))
                 .wrap(Wrap { trim: false })
                 .render(area, f.buffer_mut());
         } else {
-            Paragraph::new("Press 'Space' to toggle visualization display.\n\nRun analyses from the Analysis tab to generate visualizations.")
+            Paragraph::new("Press 'Space' to toggle visualization display.\n\nRun analyses (s, c, r, b, i) from the Analysis tab to generate terminal-rendered charts.")
                 .block(Block::default().borders(Borders::ALL).title(" Visualizations "))
                 .wrap(Wrap { trim: false })
                 .render(area, f.buffer_mut());
@@ -559,7 +555,7 @@ impl App {
                     
                     if let Some(viz_config) = result.viz_config {
                         if let Ok(viz_data) = self.viz_engine.render(df, &viz_config) {
-                            self.tabs.viz.viz_output = viz_data.svg_output;
+                            self.tabs.viz.viz_output = viz_data.terminal_output;
                             self.tabs.viz.viz_title = viz_data.title;
                             self.tabs.viz.show_viz = true;
                         }

@@ -2,8 +2,11 @@ use anyhow::Result;
 use plotters::prelude::*;
 use plotters_svg::SVGBackend;
 use super::types::*;
-use crate::data::{StatisticalAnalyzer};
+use crate::data::{StatisticalAnalyzer, analysis::{HistogramData, BoxplotData, RegressionResult}};
 use polars::prelude::DataFrame;
+
+const TERM_WIDTH: usize = 58;
+const TERM_HEIGHT: usize = 16;
 
 pub struct VisualizationEngine {
     width: u32,
@@ -66,11 +69,36 @@ impl VisualizationEngine {
             )?;
         }
 
+        let terminal_output = Self::render_histogram_ascii(&hist_data, config.bins);
         Ok(ChartData {
             chart_type: VisualizationType::Histogram,
             svg_output: buffer,
+            terminal_output,
             title: format!("Histogram: {}", config.column),
         })
+    }
+
+    fn render_histogram_ascii(hist_data: &HistogramData, bins: usize) -> String {
+        let max_count = *hist_data.bin_counts.iter().max().unwrap_or(&1) as f64;
+        let plot_height = TERM_HEIGHT.saturating_sub(2);
+        let plot_width = TERM_WIDTH.saturating_sub(4);
+
+        let display_bins = bins.min(plot_width);
+        let mut lines = vec![format!("Histogram: {} (max freq: {:.0})", hist_data.col_name, max_count)];
+        for row in (0..plot_height).rev() {
+            let threshold = (1.0 - (row as f64 + 0.5) / plot_height as f64) * max_count;
+            let mut line = String::from("  ");
+            for i in 0..display_bins {
+                let bin_idx = (i * bins) / display_bins;
+                let count = hist_data.bin_counts.get(bin_idx).copied().unwrap_or(0) as f64;
+                let filled = count >= threshold;
+                line.push(if filled { '█' } else { ' ' });
+            }
+            lines.push(line);
+        }
+        lines.push(format!("  min:{:.1} {}", hist_data.min_val, "─".repeat(plot_width.saturating_sub(10))));
+        lines.push(format!("  {}", hist_data.max_val));
+        lines.join("\n")
     }
 
     fn render_boxplot(&self, df: &DataFrame, config: &BoxPlotConfig) -> Result<ChartData> {
@@ -150,11 +178,45 @@ impl VisualizationEngine {
             }
         }
 
+        let terminal_output = Self::render_boxplot_ascii(&box_data);
         Ok(ChartData {
             chart_type: VisualizationType::BoxPlot,
             svg_output: buffer,
+            terminal_output,
             title: format!("Box Plot: {}", config.column),
         })
+    }
+
+    fn render_boxplot_ascii(box_data: &BoxplotData) -> String {
+        let range = box_data.max - box_data.min;
+        let range = if range == 0.0 { 1.0 } else { range };
+        let width = 40usize;
+        let to_x = |v: f64| -> usize {
+            (((v - box_data.min) / range) * (width as f64)).round() as usize
+        };
+        let mut grid = vec![' '; width + 2];
+        grid[to_x(box_data.min)] = '│';
+        grid[to_x(box_data.q1)] = '├';
+        grid[to_x(box_data.median)] = '┼';
+        grid[to_x(box_data.q3)] = '┤';
+        grid[to_x(box_data.max)] = '│';
+        for i in to_x(box_data.q1)..=to_x(box_data.q3) {
+            if grid[i] == ' ' {
+                grid[i] = '─';
+            }
+        }
+        let line: String = grid.iter().collect();
+        vec![
+            format!("Box Plot: {}", box_data.col_name),
+            format!("  min={:.2}  q1={:.2}  med={:.2}  q3={:.2}  max={:.2}",
+                box_data.min, box_data.q1, box_data.median, box_data.q3, box_data.max),
+            format!("  {}", line),
+            if box_data.outliers.is_empty() {
+                "  No outliers".to_string()
+            } else {
+                format!("  Outliers ({}): {:?}", box_data.outliers.len(), &box_data.outliers[..box_data.outliers.len().min(5)])
+            },
+        ].join("\n")
     }
 
     fn render_linear_regression(
@@ -228,11 +290,93 @@ impl VisualizationEngine {
             )))?;
         }
 
+        let terminal_output = Self::render_regression_ascii(
+            &reg,
+            &x_data,
+            &y_data,
+            x_min - 0.1 * x_range,
+            x_max + 0.1 * x_range,
+            y_min - 0.1 * y_range,
+            y_max + 0.1 * y_range,
+            &config.x_column,
+            &config.y_column,
+        );
         Ok(ChartData {
             chart_type: VisualizationType::LinearRegression,
             svg_output: buffer,
-            title: format!("Linear Regression: {} vs {}", config.y_column, config.x_column),
+            terminal_output,
+            title: format!("Linear Regression: {} vs {} (R²={:.4})", config.y_column, config.x_column, reg.r_squared),
         })
+    }
+
+    fn render_regression_ascii(
+        reg: &RegressionResult,
+        x_data: &[f64],
+        y_data: &[f64],
+        x_min: f64,
+        x_max: f64,
+        y_min: f64,
+        y_max: f64,
+        x_label: &str,
+        y_label: &str,
+    ) -> String {
+        let w = TERM_WIDTH.saturating_sub(6);
+        let h = TERM_HEIGHT.saturating_sub(3);
+        let x_range = x_max - x_min;
+        let y_range = y_max - y_min;
+        let x_range = if x_range == 0.0 { 1.0 } else { x_range };
+        let y_range = if y_range == 0.0 { 1.0 } else { y_range };
+
+        let to_col = |x: f64| -> usize {
+            let col = (((x - x_min) / x_range) * (w as f64)).round() as i32;
+            col.clamp(0, (w as i32).saturating_sub(1)) as usize
+        };
+        let to_row = |y: f64| -> usize {
+            let row_float = ((y - y_min) / y_range) * (h as f64);
+            let row_from_bottom = row_float.round() as i32;
+            let row_from_top = (h as i32 - 1) - row_from_bottom;
+            row_from_top.clamp(0, (h as i32).saturating_sub(1)) as usize
+        };
+
+        let mut grid: Vec<Vec<char>> = vec![vec![' '; w]; h];
+
+        for (&x, &y) in x_data.iter().zip(y_data.iter()) {
+            let c = to_col(x);
+            let r = to_row(y);
+            if c < w && r < h {
+                grid[r][c] = '·';
+            }
+        }
+
+        let line_x_start = x_min;
+        let line_x_end = x_max;
+        let line_y_start = reg.slope * line_x_start + reg.intercept;
+        let line_y_end = reg.slope * line_x_end + reg.intercept;
+        let steps = w * 2;
+        for i in 0..=steps {
+            let t = i as f64 / steps as f64;
+            let x = line_x_start + t * (line_x_end - line_x_start);
+            let y = line_y_start + t * (line_y_end - line_y_start);
+            let c = to_col(x);
+            let r = to_row(y);
+            if c < w && r < h {
+                if grid[r][c] == ' ' {
+                    grid[r][c] = '─';
+                } else {
+                    grid[r][c] = '⊕';
+                }
+            }
+        }
+
+        let mut lines = vec![
+            format!("Linear Regression: {} vs {}  R²={:.4}", y_label, x_label, reg.r_squared),
+            format!("  slope={:.4}  intercept={:.4}", reg.slope, reg.intercept),
+        ];
+        for row in &grid {
+            lines.push(format!("  {}", row.iter().collect::<String>()));
+        }
+        lines.push(format!("  {} {}", x_label, y_label));
+        lines.join("\n")
     }
 
     fn render_heatmap(&self, df: &DataFrame, config: &HeatmapConfig) -> Result<ChartData> {
@@ -253,6 +397,7 @@ impl VisualizationEngine {
             return Ok(ChartData {
                 chart_type: VisualizationType::Heatmap,
                 svg_output: "No numeric columns available".to_string(),
+                terminal_output: "No numeric columns available".to_string(),
                 title: "Correlation Heatmap".to_string(),
             });
         }
@@ -313,10 +458,33 @@ impl VisualizationEngine {
             }
         }
 
+        let terminal_output = Self::render_heatmap_ascii(&corr_matrix, &cols)?;
         Ok(ChartData {
             chart_type: VisualizationType::Heatmap,
             svg_output: buffer,
+            terminal_output,
             title: "Correlation Heatmap".to_string(),
         })
+    }
+
+    fn render_heatmap_ascii(corr_matrix: &DataFrame, cols: &[String]) -> Result<String> {
+        let n = cols.len();
+        let mut lines = vec!["Correlation Heatmap (values)".to_string()];
+        let cell_w = 7usize;
+        let header: String = cols.iter()
+            .map(|c| format!("{:>width$}", c.chars().take(5).collect::<String>(), width = cell_w))
+            .collect::<Vec<_>>()
+            .join(" ");
+        lines.push(format!("       {}", header));
+        for i in 0..n {
+            let mut row_str = format!("{:>5} ", cols[i].chars().take(5).collect::<String>());
+            for j in 0..n {
+                let series = corr_matrix.column(&cols[j])?;
+                let val = series.f64()?.get(i).unwrap_or(0.0);
+                row_str.push_str(&format!("{:>width$} ", format!("{:.2}", val), width = cell_w - 1));
+            }
+            lines.push(row_str);
+        }
+        Ok(lines.join("\n"))
     }
 }
