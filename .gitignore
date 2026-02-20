@@ -1,0 +1,12 @@
+# API keys and sensitive data
+.env
+config.toml
+config/
+
+# Build artifacts
+target/
+Cargo.lock
+
+# OS files
+.DS_Store
+Thumbs.db
