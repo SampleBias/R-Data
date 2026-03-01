@@ -72,6 +72,8 @@ struct GeneSelectionState {
     cursor: usize,
     max_select: usize,
     action: GeneSelectionAction,
+    /// Search input: type / or paste gene ID, Enter to find and select.
+    search_input: Option<String>,
 }
 
 /// Focus on Data tab: TabBar (tabs at top) or AgeSelector (age range field).
@@ -202,8 +204,10 @@ impl App {
             }
 
             if event::poll(Duration::from_millis(100))? {
-                if let Event::Key(key) = event::read()? {
-                    self.handle_key_event(key)?;
+                match event::read()? {
+                    Event::Key(key) => self.handle_key_event(key)?,
+                    Event::Paste(s) => self.handle_paste(&s)?,
+                    _ => {}
                 }
             }
         }
@@ -497,7 +501,7 @@ impl App {
                 .wrap(Wrap { trim: false })
                 .render(area, f.buffer_mut());
         } else {
-            Paragraph::new("Press 'Space' to toggle display • 'O' to open chart in browser/viewer\n\nRun analyses (s, c, r, b, i) from the Analysis tab. Charts use ggplot2-style rendering.")
+            Paragraph::new("Press 'Space' to toggle display • 'O' to open chart in browser/viewer\n\nRun analyses (s, i, r, h, g) from the Analysis tab. Charts use ggplot2-style rendering.")
                 .block(Block::default().borders(Borders::ALL).title(" Visualizations "))
                 .wrap(Wrap { trim: false })
                 .render(area, f.buffer_mut());
@@ -510,8 +514,16 @@ impl App {
             GeneSelectionAction::ExpressionTrend => "Select genes for Expression Trend (★ to select, max 5)",
             GeneSelectionAction::ExpressionVsAgeRegression => "Select genes for Expression vs Age Regression (★ to select, 1-5 genes)",
         };
-        let hint = ratatui::text::Line::from("↑/↓ move • Space or * to select ★ • Enter to confirm • Esc to cancel");
+        let hint = if state.search_input.is_some() {
+            ratatui::text::Line::from("Type gene ID, Enter to find & select • Esc to cancel search")
+        } else {
+            ratatui::text::Line::from("↑/↓ move • Space or * select ★ • / to search • Paste gene ID • Enter confirm • Esc cancel")
+        };
         let mut items = vec![ListItem::new(hint), ListItem::new("")];
+        if let Some(ref search) = state.search_input {
+            items.push(ListItem::new(format!("Search: {}_", search)));
+            items.push(ListItem::new(""));
+        }
         for (i, gene) in state.genes.iter().enumerate() {
             let star = if state.selected.contains(&i) { " ★ " } else { "   " };
             let prefix = if i == state.cursor {
@@ -605,6 +617,24 @@ impl App {
         Paragraph::new(display)
             .block(Block::default().borders(Borders::ALL).title(" Input "))
             .render(chunks[1], f.buffer_mut());
+    }
+
+    fn handle_paste(&mut self, text: &str) -> Result<()> {
+        if let Some(ref mut state) = self.gene_selection {
+            let query = text.trim();
+            if !query.is_empty() {
+                let idx = state.genes.iter().position(|g| {
+                    g.eq_ignore_ascii_case(query) || g.contains(query)
+                });
+                if let Some(i) = idx {
+                    state.cursor = i;
+                    if state.selected.len() < state.max_select {
+                        state.selected.insert(i);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
@@ -720,9 +750,43 @@ impl App {
         }
 
         if let Some(ref mut state) = self.gene_selection {
+            if let Some(ref mut search) = state.search_input {
+                match key.code {
+                    KeyCode::Esc => {
+                        state.search_input = None;
+                    }
+                    KeyCode::Enter => {
+                        let query = search.clone();
+                        state.search_input = None;
+                        let query = query.trim();
+                        if !query.is_empty() {
+                            let idx = state.genes.iter().position(|g| {
+                                g.eq_ignore_ascii_case(query) || g.contains(query)
+                            });
+                            if let Some(i) = idx {
+                                state.cursor = i;
+                                if state.selected.len() < state.max_select {
+                                    state.selected.insert(i);
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        search.pop();
+                    }
+                    KeyCode::Char(c) => {
+                        search.push(c);
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             match key.code {
                 KeyCode::Esc => {
                     self.gene_selection = None;
+                }
+                KeyCode::Char('/') => {
+                    state.search_input = Some(String::new());
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     state.cursor = state.cursor.saturating_sub(1).min(state.genes.len().saturating_sub(1));
@@ -782,9 +846,7 @@ impl App {
             => {
                 self.age_group_input = Some(String::new());
             }
-            KeyCode::Char('C') if self.input_mode == InputMode::Normal
-                && (self.tabs.active == Tab::Analysis || self.tabs.active == Tab::Visualizations)
-            => {
+            KeyCode::Char('C') if self.input_mode == InputMode::Normal => {
                 self.tabs.analysis.results.clear();
                 self.tabs.analysis.analysis_status = AnalysisStatus::Idle;
                 self.tabs.viz.viz_output.clear();
@@ -956,14 +1018,14 @@ impl App {
                 }
                 match c {
                     's' if avail.map(|v| v.available).unwrap_or(false) => {
-                        self.pending_analysis = Some(AnalysisRequest::SummaryStats);
+                        let gene_age = self.active_layout().map(|l| {
+                            (l.gene_column.clone(), self.effective_age_columns(l))
+                        });
+                        self.pending_analysis = Some(AnalysisRequest::SummaryStats {
+                            gene_age_summary: gene_age,
+                        });
                         self.tabs.analysis.analysis_status =
-                            AnalysisStatus::PendingConfirm { request: "Summary statistics".to_string() };
-                    }
-                    'c' if avail.map(|v| v.available).unwrap_or(false) => {
-                        self.pending_analysis = Some(AnalysisRequest::Correlation);
-                        self.tabs.analysis.analysis_status =
-                            AnalysisStatus::PendingConfirm { request: "Correlation matrix".to_string() };
+                            AnalysisStatus::PendingConfirm { request: "Summary statistics (mean, median, mode, R², p-value, correlation)".to_string() };
                     }
                     'r' if avail.map(|v| v.available).unwrap_or(false) => {
                         if let Some(layout) = self.active_layout() {
@@ -998,20 +1060,13 @@ impl App {
                                 age_columns: self.effective_age_columns(layout),
                             });
                             self.tabs.analysis.analysis_status =
-                                AnalysisStatus::PendingConfirm { request: "Genes significant with age (p<0.05)".to_string() };
+                                AnalysisStatus::PendingConfirm { request: "Gene correlation with aging (positive/negative, p<0.05)".to_string() };
                         }
                     }
-                    'b' if avail.map(|v| v.available).unwrap_or(false) => {
-                        if let Some(df) = self.active_dataframe() {
-                            if let Some(col) = df.get_columns().iter()
-                                .find(|c| c.dtype().is_numeric())
-                                .map(|c| c.name().to_string())
-                            {
-                                self.pending_analysis = Some(AnalysisRequest::BoxPlot { column: col.clone() });
-                                self.tabs.analysis.analysis_status =
-                                    AnalysisStatus::PendingConfirm { request: format!("Box plot: {}", col) };
-                            }
-                        }
+                    'h' if avail.map(|v| v.available).unwrap_or(false) => {
+                        self.pending_analysis = Some(AnalysisRequest::Heatmap);
+                        self.tabs.analysis.analysis_status =
+                            AnalysisStatus::PendingConfirm { request: "Heatmap (correlation matrix)".to_string() };
                     }
                     'i' if avail.map(|v| v.available).unwrap_or(false) => {
                         if let Some(df) = self.active_dataframe() {
@@ -1027,113 +1082,6 @@ impl App {
                                 self.tabs.analysis.analysis_status =
                                     AnalysisStatus::PendingConfirm { request: format!("Histogram: {} ({} bins)", col, bins) };
                             }
-                        }
-                    }
-                    't' if avail.map(|v| v.available).unwrap_or(false) => {
-                        if let Some(layout) = self.active_layout() {
-                            let genes: Vec<String> = self
-                                .active_dataframe()
-                                .and_then(|df| df.column(&layout.gene_column).ok())
-                                .and_then(|c| c.str().ok())
-                                .map(|s| s.into_iter().filter_map(|o| o.map(str::to_string)).collect())
-                                .unwrap_or_default();
-                            if !genes.is_empty() {
-                                self.gene_selection = Some(GeneSelectionState {
-                                    genes,
-                                    selected: std::collections::HashSet::new(),
-                                    cursor: 0,
-                                    max_select: 5,
-                                    action: GeneSelectionAction::ExpressionTrend,
-                                });
-                            }
-                        }
-                    }
-                    'v' if avail.map(|v| v.available).unwrap_or(false) => {
-                        if let Some(layout) = self.active_layout() {
-                            let (young_cols, old_cols) = self
-                                .age_groups
-                                .as_ref()
-                                .and_then(|g| {
-                                    let age_cols = self.effective_age_columns(layout);
-                                    let parts = crate::data::partition_ages_by_groups(
-                                        &age_cols,
-                                        g,
-                                    );
-                                    if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-                                        Some((Some(parts[0].clone()), Some(parts[1].clone())))
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .unwrap_or((None, None));
-                            self.pending_analysis = Some(AnalysisRequest::YoungVsOld {
-                                gene_column: layout.gene_column.clone(),
-                                age_columns: self.effective_age_columns(layout),
-                                young_cols,
-                                old_cols,
-                            });
-                            self.tabs.analysis.analysis_status =
-                                AnalysisStatus::PendingConfirm { request: "Young vs Old scatter".to_string() };
-                        }
-                    }
-                    'a' if avail.map(|v| v.available).unwrap_or(false) => {
-                        if let Some(layout) = self.active_layout() {
-                            self.pending_analysis = Some(AnalysisRequest::AgeGroupBoxPlot {
-                                gene_column: layout.gene_column.clone(),
-                                age_columns: self.effective_age_columns(layout),
-                            });
-                            self.tabs.analysis.analysis_status =
-                                AnalysisStatus::PendingConfirm { request: "Age group box plot".to_string() };
-                        }
-                    }
-                    'e' if avail.map(|v| v.available).unwrap_or(false) => {
-                        if let Some(layout) = self.active_layout() {
-                            let genes: Vec<String> = self
-                                .active_dataframe()
-                                .and_then(|df| df.column(&layout.gene_column).ok())
-                                .and_then(|c| c.str().ok())
-                                .map(|s| s.into_iter().filter_map(|o| o.map(str::to_string)).collect())
-                                .unwrap_or_default();
-                            if !genes.is_empty() {
-                                self.gene_selection = Some(GeneSelectionState {
-                                    genes,
-                                    selected: std::collections::HashSet::new(),
-                                    cursor: 0,
-                                    max_select: 5,
-                                    action: GeneSelectionAction::ExpressionVsAgeRegression,
-                                });
-                            }
-                        }
-                    }
-                    '1' if avail.map(|v| v.available).unwrap_or(false) => {
-                        if let Some(layout) = self.active_layout() {
-                            self.pending_analysis = Some(AnalysisRequest::GenesVolcanoPlot {
-                                gene_column: layout.gene_column.clone(),
-                                age_columns: self.effective_age_columns(layout),
-                            });
-                            self.tabs.analysis.analysis_status =
-                                AnalysisStatus::PendingConfirm { request: "Volcano plot".to_string() };
-                        }
-                    }
-                    '2' if avail.map(|v| v.available).unwrap_or(false) => {
-                        if let Some(layout) = self.active_layout() {
-                            self.pending_analysis = Some(AnalysisRequest::GenesCorrelationScatter {
-                                gene_column: layout.gene_column.clone(),
-                                age_columns: self.effective_age_columns(layout),
-                            });
-                            self.tabs.analysis.analysis_status =
-                                AnalysisStatus::PendingConfirm { request: "Correlation scatter".to_string() };
-                        }
-                    }
-                    '3' if avail.map(|v| v.available).unwrap_or(false) => {
-                        if let Some(layout) = self.active_layout() {
-                            self.pending_analysis = Some(AnalysisRequest::GenesCorrelationBarChart {
-                                gene_column: layout.gene_column.clone(),
-                                age_columns: self.effective_age_columns(layout),
-                                top_n: 30,
-                            });
-                            self.tabs.analysis.analysis_status =
-                                AnalysisStatus::PendingConfirm { request: "Top 30 genes bar chart".to_string() };
                         }
                     }
                     _ => {}

@@ -106,6 +106,8 @@ pub struct CorrelationBarChartConfig {
 #[derive(Debug, Clone)]
 pub struct VolcanoPlotConfig {
     pub points: Vec<GeneCorrelationPoint>,
+    /// Optional gene tables (pos/neg) to show in terminal output when from GenesSignificantWithAge.
+    pub gene_tables: Option<String>,
 }
 
 /// Expression vs age with regression line(s). 1–5 genes.

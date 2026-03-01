@@ -31,19 +31,32 @@ impl DataLoader {
         let mut columns: Vec<Series> = Vec::with_capacity(num_cols);
 
         for col_idx in 0..num_cols {
-            let mut str_values: Vec<Option<String>> = Vec::new();
-            for row in rows.iter().skip(1) {
-                let cell = row.get(col_idx).unwrap_or(&Data::Empty);
-                str_values.push(cell.as_string());
+            if col_idx == 0 {
+                let str_values: Vec<String> = rows.iter().skip(1)
+                    .map(|row| {
+                        let cell = row.get(col_idx).unwrap_or(&Data::Empty);
+                        cell.as_string().unwrap_or_default()
+                    })
+                    .collect();
+                columns.push(Series::new(headers[col_idx].as_str().into(), str_values));
+            } else {
+                let f64_values: Vec<Option<f64>> = rows.iter().skip(1)
+                    .map(|row| {
+                        let cell = row.get(col_idx).unwrap_or(&Data::Empty);
+                        match cell {
+                            Data::Float(f) => Some(*f),
+                            Data::Int(i) => Some(*i as f64),
+                            Data::Empty => None,
+                            _ => cell.as_string().and_then(|s| s.parse::<f64>().ok()),
+                        }
+                    })
+                    .collect();
+                let series = Series::new(
+                    headers[col_idx].as_str().into(),
+                    f64_values,
+                );
+                columns.push(series);
             }
-            let series = Series::new(
-                headers[col_idx].as_str().into(),
-                str_values
-                    .into_iter()
-                    .map(|o| o.unwrap_or_default())
-                    .collect::<Vec<_>>(),
-            );
-            columns.push(series);
         }
 
         let cols: Vec<_> = columns.into_iter().map(|s| s.into_column()).collect();
@@ -114,7 +127,7 @@ impl DataLoader {
         let mut stats = Vec::new();
         for col_name in &numeric_cols {
             let series = df.column(col_name)?;
-            
+
             let series_f64 = if let Ok(s) = series.f64() {
                 s.clone()
             } else if let Ok(s) = series.i32() {
@@ -131,10 +144,14 @@ impl DataLoader {
             let std_dev = series_f64.std(1).unwrap_or(0.0);
             let min_val = series_f64.min().unwrap_or(0.0);
             let max_val = series_f64.max().unwrap_or(0.0);
+            let median = Self::compute_median(&series_f64);
+            let mode = Self::compute_mode(&series_f64);
 
             stats.push((
                 col_name.clone(),
                 mean,
+                median,
+                mode,
                 std_dev,
                 min_val,
                 max_val,
@@ -149,13 +166,49 @@ impl DataLoader {
         let df_stats = df!(
             "Column" => &stats.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
             "Mean" => &stats.iter().map(|s| s.1).collect::<Vec<_>>(),
-            "StdDev" => &stats.iter().map(|s| s.2).collect::<Vec<_>>(),
-            "Min" => &stats.iter().map(|s| s.3).collect::<Vec<_>>(),
-            "Max" => &stats.iter().map(|s| s.4).collect::<Vec<_>>(),
-            "Count" => &stats.iter().map(|s| s.5 as u32).collect::<Vec<_>>(),
+            "Median" => &stats.iter().map(|s| s.2).collect::<Vec<_>>(),
+            "Mode" => &stats.iter().map(|s| s.3).collect::<Vec<_>>(),
+            "StdDev" => &stats.iter().map(|s| s.4).collect::<Vec<_>>(),
+            "Min" => &stats.iter().map(|s| s.5).collect::<Vec<_>>(),
+            "Max" => &stats.iter().map(|s| s.6).collect::<Vec<_>>(),
+            "Count" => &stats.iter().map(|s| s.7 as u32).collect::<Vec<_>>(),
         )?;
 
         Ok(df_stats)
+    }
+
+    fn compute_median(ca: &Float64Chunked) -> f64 {
+        let mut vals: Vec<f64> = ca.into_no_null_iter().collect();
+        if vals.is_empty() {
+            return 0.0;
+        }
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = vals.len();
+        if n % 2 == 1 {
+            vals[n / 2]
+        } else {
+            (vals[n / 2 - 1] + vals[n / 2]) / 2.0
+        }
+    }
+
+    fn compute_mode(ca: &Float64Chunked) -> f64 {
+        let vals: Vec<f64> = ca.into_no_null_iter().collect();
+        if vals.is_empty() {
+            return 0.0;
+        }
+        // Round to 4 decimal places for mode (continuous data)
+        let rounded: Vec<f64> = vals.iter().map(|v| (v * 10000.0).round() / 10000.0).collect();
+        let mut counts: std::collections::HashMap<u64, (f64, usize)> = std::collections::HashMap::new();
+        for &v in &rounded {
+            let key = v.to_bits();
+            let entry = counts.entry(key).or_insert((v, 0));
+            entry.1 += 1;
+        }
+        counts
+            .values()
+            .max_by_key(|(_, c)| *c)
+            .map(|(v, _)| *v)
+            .unwrap_or(rounded[0])
     }
 }
 
@@ -248,7 +301,7 @@ impl DataLayout {
             return None;
         }
 
-        let first_name = cols[0].name().to_lowercase();
+        let first_name = cols[0].name().trim().to_lowercase();
         let gene_header_patterns = ["gene id", "gene_id", "geneid", "gene", "ensembl"];
         let is_gene_col = gene_header_patterns
             .iter()
@@ -295,21 +348,13 @@ impl DataLayout {
 /// Ensure numeric columns are typed as Float64 for expression data.
 /// Converts string columns that parse as numbers when layout is microarray.
 pub fn coerce_expression_columns(df: &mut DataFrame, layout: &DataLayout) -> Result<()> {
-    let to_coerce: Vec<String> = layout
-        .age_columns
-        .iter()
-        .filter_map(|name| {
-            let col = df.column(name).ok()?;
-            if !col.dtype().is_numeric() {
-                Some(name.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-    for col_name in to_coerce {
-        let col = df.column(&col_name)?.cast(&DataType::Float64)?;
-        df.with_column(col)?;
+    for col_name in &layout.age_columns {
+        let col = df.column(col_name)?;
+        if col.dtype().is_numeric() {
+            continue;
+        }
+        let new_col = col.cast(&DataType::Float64)?;
+        df.with_column(new_col)?;
     }
     Ok(())
 }

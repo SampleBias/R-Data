@@ -5,7 +5,10 @@ use crate::viz::VisualizationConfig;
 
 #[derive(Clone, Debug)]
 pub enum AnalysisRequest {
-    SummaryStats,
+    SummaryStats {
+        /// When present (microarray layout), include gene-age correlation summary (R², p-value, correlation).
+        gene_age_summary: Option<(String, Vec<String>)>,
+    },
     Correlation,
     Histogram { column: String, bins: usize },
     BoxPlot { column: String },
@@ -73,9 +76,29 @@ impl AnalysisRunner {
         request: AnalysisRequest,
     ) -> Result<AnalysisResult> {
         match request {
-            AnalysisRequest::SummaryStats => {
+            AnalysisRequest::SummaryStats { gene_age_summary } => {
                 let stats = DataLoader::get_summary_stats(df)?;
-                let details = format!("{}", stats);
+                let mut details = format!("{}", stats);
+                if let Some((gene_column, age_columns)) = gene_age_summary {
+                    let results =
+                        crate::data::StatisticalAnalyzer::genes_expression_vs_age(
+                            df, &gene_column, &age_columns,
+                        )?;
+                    let n = results.len();
+                    let mean_corr = results.iter().map(|r| r.correlation).sum::<f64>() / n.max(1) as f64;
+                    let mean_r2 = results.iter().map(|r| r.r_squared).sum::<f64>() / n.max(1) as f64;
+                    let n_sig = results.iter().filter(|r| r.significant).count();
+                    let n_pos = results.iter().filter(|r| r.significant && r.correlation > 0.0).count();
+                    let n_neg = results.iter().filter(|r| r.significant && r.correlation < 0.0).count();
+                    let summary_section = format!(
+                        "\n\n--- Gene-age correlation summary (R², p-value, correlation) ---\n\
+                        Genes: {} | Mean correlation: {:.4} | Mean R²: {:.4}\n\
+                        Significant (p<0.05): {} total ({} positive, {} negative)\n\
+                        Press [g] for full gene-by-gene table.",
+                        n, mean_corr, mean_r2, n_sig, n_pos, n_neg
+                    );
+                    details.push_str(&summary_section);
+                }
                 Ok(AnalysisResult {
                     summary: format!("Statistical summary:\n{}", details),
                     details: Some(details),
@@ -317,7 +340,10 @@ impl AnalysisRunner {
                     summary: summary.clone(),
                     details: Some(format!("{}\n\n{}", summary, table)),
                     viz_config: Some(VisualizationConfig::VolcanoPlot(
-                        crate::viz::VolcanoPlotConfig { points },
+                        crate::viz::VolcanoPlotConfig {
+                            points,
+                            gene_tables: None,
+                        },
                     )),
                 })
             }
@@ -347,7 +373,10 @@ impl AnalysisRunner {
                     summary: summary.clone(),
                     details: Some(format!("{}\n\n{}", summary, details)),
                     viz_config: Some(VisualizationConfig::VolcanoPlot(
-                        crate::viz::VolcanoPlotConfig { points },
+                        crate::viz::VolcanoPlotConfig {
+                            points,
+                            gene_tables: Some(details),
+                        },
                     )),
                 })
             }
@@ -409,7 +438,10 @@ impl AnalysisRunner {
                     summary: summary.clone(),
                     details: Some(summary),
                     viz_config: Some(VisualizationConfig::VolcanoPlot(
-                        crate::viz::VolcanoPlotConfig { points },
+                        crate::viz::VolcanoPlotConfig {
+                            points,
+                            gene_tables: None,
+                        },
                     )),
                 })
             }

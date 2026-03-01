@@ -1055,10 +1055,14 @@ impl VisualizationEngine {
             }
         }
 
-        let terminal_output = format!(
+        let mut terminal_output = format!(
             "Volcano: {} genes (red=positive, blue=negative)",
             config.points.len()
         );
+        if let Some(ref tables) = config.gene_tables {
+            terminal_output.push_str("\n\n");
+            terminal_output.push_str(tables);
+        }
         let svg_file_path = Self::save_svg_to_temp(&buffer, "rdata-volcano").ok();
         Ok(ChartData {
             chart_type: VisualizationType::VolcanoPlot,
