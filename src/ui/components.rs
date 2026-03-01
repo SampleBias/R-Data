@@ -294,7 +294,7 @@ impl AppTabs {
             "    Type your request  e.g. \"Load data.csv and show genes significant with age\"",
             "    Enter              Send message to Agent (has full app context)",
             "    Esc                Toggle: input ↔ chat (cyan border = scroll mode)",
-            "    ↑/↓ PageUp/Down    Scroll conversation (when chat focused)",
+            "    ↑/↓ PageUp/Down    Page up/down through conversation (when chat focused)",
             "    PageUp/PageDown    Scroll by page",
             "    Home/End           Jump to top/bottom",
             "    /tools            List available tools",

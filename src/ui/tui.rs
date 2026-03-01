@@ -59,6 +59,8 @@ pub struct App {
     pending_agent_input: Option<String>,
     /// Persistent conversation history for the AI (full context across turns)
     conversation: Conversation,
+    /// Cached visible height of agent chat (for scroll calculations)
+    agent_chat_visible_height: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,6 +193,7 @@ impl App {
             loading_tick: 0,
             pending_agent_input: None,
             conversation: Conversation::new(Self::system_prompt()),
+            agent_chat_visible_height: 20,
         })
     }
 
@@ -299,7 +302,9 @@ impl App {
         }
     }
 
-    fn draw<B: Backend>(&self, terminal: &mut Terminal<B>) -> Result<()> {
+    fn draw<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
+        let visible_height: std::cell::RefCell<u16> =
+            std::cell::RefCell::new(self.agent_chat_visible_height);
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -328,9 +333,27 @@ impl App {
                 Tab::Data => self.render_data_tab(f, chunks[1]),
                 Tab::Analysis => self.render_analysis_tab(f, chunks[1]),
                 Tab::Visualizations => self.render_viz_tab(f, chunks[1]),
-                Tab::Agent => self.render_agent_tab(f, chunks[1]),
+                Tab::Agent => {
+                    let agent_chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Min(0), Constraint::Length(3)])
+                        .split(chunks[1]);
+                    let h = agent_chunks[0].height.saturating_sub(2);
+                    *visible_height.borrow_mut() = if self.tabs.agent.status == AgentStatus::Processing
+                    {
+                        let inner = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([Constraint::Length(3), Constraint::Min(0)])
+                            .split(agent_chunks[0]);
+                        inner[1].height.saturating_sub(2)
+                    } else {
+                        h
+                    };
+                    self.render_agent_tab(f, chunks[1]);
+                }
             }
         })?;
+        self.agent_chat_visible_height = visible_height.into_inner();
         Ok(())
     }
 
@@ -664,9 +687,17 @@ impl App {
                 .scroll((0, skip))
                 .render(inner[1], f.buffer_mut());
         } else {
+            let page_info = if max_scroll > 0 {
+                let pg = visible_height.max(1);
+                let total_pages = ((content_lines + pg - 1) / pg).max(1);
+                let current_page = (scroll_offset / pg + 1).min(total_pages);
+                format!(" Page {}/{} ", current_page, total_pages)
+            } else {
+                String::new()
+            };
             let chat_title = match self.tabs.agent.focus {
-                AgentFocus::Chat => " Agent │ ↑/↓ scroll │ Esc: back to input ",
-                AgentFocus::Input => " Agent │ Esc: scroll chat ",
+                AgentFocus::Chat => format!(" Agent │ ↑/↓ page │ Esc: back {}", page_info),
+                AgentFocus::Input => " Agent │ Esc: scroll chat ".to_string(),
             };
             let chat_block = Block::default()
                 .borders(Borders::ALL)
@@ -924,33 +955,25 @@ impl App {
             && !matches!(self.file_dialog_state, FileDialogState::AwaitingPath)
         {
             let content_lines = self.agent_content_line_count();
-            const VISIBLE_ESTIMATE: u16 = 25;
-            let max_scroll = content_lines.saturating_sub(VISIBLE_ESTIMATE).max(0);
+            let page_size = self.agent_chat_visible_height.max(1);
+            let max_scroll = content_lines.saturating_sub(page_size).max(0);
 
             match (self.tabs.agent.focus, key.code) {
-                // Chat focus: scroll keys and Esc to exit
+                // Chat focus: page-based scroll and Esc to exit
                 (AgentFocus::Chat, KeyCode::Esc) => {
                     self.tabs.agent.focus = AgentFocus::Input;
                     return Ok(());
                 }
-                (AgentFocus::Chat, KeyCode::Up) => {
+                (AgentFocus::Chat, KeyCode::Up | KeyCode::PageUp) => {
+                    // Previous page (older content)
                     self.tabs.agent.scroll_offset =
-                        (self.tabs.agent.scroll_offset + 1).min(max_scroll);
+                        (self.tabs.agent.scroll_offset + page_size).min(max_scroll);
                     return Ok(());
                 }
-                (AgentFocus::Chat, KeyCode::Down) => {
+                (AgentFocus::Chat, KeyCode::Down | KeyCode::PageDown) => {
+                    // Next page (newer content)
                     self.tabs.agent.scroll_offset =
-                        self.tabs.agent.scroll_offset.saturating_sub(1);
-                    return Ok(());
-                }
-                (AgentFocus::Chat, KeyCode::PageUp) => {
-                    self.tabs.agent.scroll_offset =
-                        (self.tabs.agent.scroll_offset + VISIBLE_ESTIMATE).min(max_scroll);
-                    return Ok(());
-                }
-                (AgentFocus::Chat, KeyCode::PageDown) => {
-                    self.tabs.agent.scroll_offset =
-                        self.tabs.agent.scroll_offset.saturating_sub(VISIBLE_ESTIMATE);
+                        self.tabs.agent.scroll_offset.saturating_sub(page_size);
                     return Ok(());
                 }
                 (AgentFocus::Chat, KeyCode::Home) => {
