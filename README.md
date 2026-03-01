@@ -47,7 +47,7 @@ cargo run
 **General:**
 - `Tab` / `Shift+Tab` — Switch tabs (Data, Analysis, Visualizations)
 - `q` — Quit
-- `?` or `h` — Help
+- `?` — Help
 - `C` — Clear analysis results and visualizations
 
 **Data Tab:**

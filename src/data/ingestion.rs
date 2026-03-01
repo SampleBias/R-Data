@@ -345,6 +345,54 @@ impl DataLayout {
     }
 }
 
+/// Build a filtered DataFrame from the main data using selected genes and age columns.
+/// Only the selected rows (genes) and columns (ages) are included. This is the "locked in"
+/// dataframe used for all downstream analyses until cleared or new data is loaded.
+pub fn build_filtered_dataframe(
+    df: &DataFrame,
+    layout: &DataLayout,
+    selected_genes: Option<&std::collections::HashSet<String>>,
+    selected_age_columns: Option<&std::collections::HashSet<String>>,
+) -> Result<DataFrame> {
+    let age_columns: Vec<String> = match selected_age_columns {
+        Some(sel) => layout
+            .age_columns
+            .iter()
+            .filter(|c| sel.contains(*c))
+            .cloned()
+            .collect(),
+        None => layout.age_columns.clone(),
+    };
+
+    if age_columns.is_empty() {
+        return Err(anyhow::anyhow!("No age columns selected"));
+    }
+
+    let work = if let Some(genes) = selected_genes {
+        if genes.is_empty() {
+            return Err(anyhow::anyhow!("No genes selected"));
+        }
+        let gene_col = df.column(&layout.gene_column)?;
+        let indices: Vec<u32> = gene_col
+            .str()?
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, o)| o.and_then(|s| genes.contains(s).then_some(i as u32)))
+            .collect();
+        let idx_ca = UInt32Chunked::from_vec("idx".into(), indices);
+        df.take(&idx_ca)?
+    } else {
+        df.clone()
+    };
+
+    let cols: Vec<&str> = std::iter::once(layout.gene_column.as_str())
+        .chain(age_columns.iter().map(|s| s.as_str()))
+        .collect();
+    let out = work.select(cols)?;
+
+    Ok(out)
+}
+
 /// Ensure numeric columns are typed as Float64 for expression data.
 /// Converts string columns that parse as numbers when layout is microarray.
 pub fn coerce_expression_columns(df: &mut DataFrame, layout: &DataLayout) -> Result<()> {

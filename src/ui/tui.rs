@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::{
-    data::{DataLoader, ColumnInfo, DataLayout, coerce_expression_columns},
+    data::{DataLoader, ColumnInfo, DataLayout, build_filtered_dataframe, coerce_expression_columns},
     runner::{AnalysisRequest, AnalysisRunner},
     viz::{VisualizationEngine, available_visualizations},
     config::{Config, ConfigManager},
@@ -87,11 +87,12 @@ enum DataTabFocus {
     GeneSelector,
 }
 
-/// Age selector embedded on Data tab: only available ages from layout, [x]:17 format.
+/// Age selector embedded on Data tab: only available ages from layout, [x]:17 format. Scrollable list.
 #[derive(Debug, Clone)]
 struct DataTabAgeSelectorState {
     ages: Vec<String>,
     cursor: usize,
+    scroll_offset: usize,
 }
 
 /// Gene selector embedded on Data tab: genes from layout, [x]:ENSG... format. Scrollable list.
@@ -138,6 +139,25 @@ impl App {
         self.selected_genes.clone()
     }
 
+    /// Returns the dataframe to use for analysis: filtered by selected genes and ages when layout
+    /// is present, otherwise the full dataframe. This is the "locked in" data until cleared/reloaded.
+    fn effective_dataframe(&self) -> Option<polars::prelude::DataFrame> {
+        let df = self.active_dataframe()?;
+        let layout = match self.active_layout() {
+            Some(l) => l,
+            None => return Some(df.clone()),
+        };
+        match build_filtered_dataframe(
+            df,
+            layout,
+            self.selected_genes.as_ref(),
+            self.selected_age_columns.as_ref(),
+        ) {
+            Ok(filtered) => Some(filtered),
+            Err(_) => None,
+        }
+    }
+
     pub fn new(config: Config) -> Result<Self> {
         let viz_engine = VisualizationEngine::new(config.viz_width, config.viz_height);
         Ok(Self {
@@ -181,7 +201,25 @@ impl App {
                 && self.pending_analysis.is_some()
             {
                 let request = self.pending_analysis.take().unwrap();
-                let run_result = self.active_dataframe().map(|df| AnalysisRunner::run(df, request));
+                let (run_result, filter_err) = match self.effective_dataframe() {
+                    Some(df) => (Some(AnalysisRunner::run(&df, request)), None),
+                    None if self.active_dataframe().is_some() && self.active_layout().is_some() => {
+                        let err = self.active_layout().and_then(|layout| {
+                            build_filtered_dataframe(
+                                self.active_dataframe().unwrap(),
+                                layout,
+                                self.selected_genes.as_ref(),
+                                self.selected_age_columns.as_ref(),
+                            )
+                            .err()
+                        });
+                        (None, Some(err.map(|e| e.to_string()).unwrap_or_else(|| "No genes or age columns selected".to_string())))
+                    }
+                    None => (None, None),
+                };
+                if let Some(ref msg) = filter_err {
+                    self.tabs.analysis.analysis_status = AnalysisStatus::Error(msg.clone());
+                }
                 match run_result {
                     Some(Ok(result)) => {
                         let output = format!(
@@ -193,8 +231,8 @@ impl App {
                         self.tabs.analysis.analysis_status =
                             AnalysisStatus::Success("Analysis completed".to_string());
                         if let Some(ref viz_config) = result.viz_config {
-                            if let Some(df) = self.active_dataframe() {
-                                if let Ok(viz_data) = self.viz_engine.render(df, viz_config) {
+                            if let Some(df) = self.effective_dataframe() {
+                                if let Ok(viz_data) = self.viz_engine.render(&df, viz_config) {
                                     self.tabs.viz.viz_output = viz_data.terminal_output;
                                     self.tabs.viz.viz_title = viz_data.title;
                                     self.tabs.viz.viz_svg_path = viz_data.svg_file_path;
@@ -214,10 +252,11 @@ impl App {
                         self.tabs.analysis.analysis_status =
                             AnalysisStatus::Error(e.to_string());
                     }
-                    None => {
+                    None if filter_err.is_none() => {
                         self.tabs.analysis.analysis_status =
                             AnalysisStatus::Error("No data loaded".to_string());
                     }
+                    _ => {}
                 }
             }
 
@@ -406,12 +445,19 @@ impl App {
                 .constraints([Constraint::Length(10), Constraint::Min(0)].as_ref())
                 .split(bottom_area);
 
-            let (info_text, preview_text) = self.active_dataset()
+            let (mut info_text, preview_text) = self.active_dataset()
                 .map(|d| (d.dataframe_info.clone(), d.preview_data.clone()))
                 .unwrap_or((
                     self.tabs.data.dataframe_info.clone(),
                     self.tabs.data.preview_data.clone(),
                 ));
+            if let Some(df) = self.effective_dataframe() {
+                let n_genes = df.height();
+                let n_cols = df.width().saturating_sub(1);
+                if self.selected_genes.is_some() || self.selected_age_columns.is_some() {
+                    info_text.push_str(&format!("\n\n--- Active filter (locked in) ---\n{} genes × {} age columns", n_genes, n_cols));
+                }
+            }
             Paragraph::new(info_text)
                 .block(Block::default().borders(Borders::ALL).title(" DataFrame Info "))
                 .wrap(Wrap { trim: false })
@@ -590,41 +636,40 @@ impl App {
                 true
             }
         };
-        const COLS: usize = 12;
+        let visible_height = area.height.saturating_sub(3).max(1) as usize;
+        let start = state.scroll_offset.min(state.ages.len().saturating_sub(1));
+        let end = (start + visible_height).min(state.ages.len());
         let hint = if self.data_tab_focus == DataTabFocus::AgeSelector {
-            "Tab, ↑ or Esc to return to tabs • k/j/h/l to move • X to toggle"
+            "j/k move • g page down • G end • Home/End • X toggle • a=all u=none • Tab/↑/Esc return"
         } else {
             "↓ to enter age selection • Tab switches Data/Analysis/Viz"
         };
-        let mut lines: Vec<ratatui::text::Line> = vec![ratatui::text::Line::from(hint)];
-        for (i, age) in state.ages.iter().enumerate() {
+        let mut items = vec![ListItem::new(ratatui::text::Line::from(hint))];
+        for (i, age) in state.ages[start..end].iter().enumerate() {
+            let idx = start + i;
             let mark = if is_selected(age) { "x" } else { " " };
-            let is_cursor = i == state.cursor && self.data_tab_focus == DataTabFocus::AgeSelector;
-            let span = ratatui::text::Span::styled(
-                format!("[{}]:{} ", mark, age),
-                if is_cursor {
-                    Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
-                } else if is_selected(age) {
-                    Style::default().fg(Color::Green)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                },
-            );
-            let col = i % COLS;
-            if col == 0 {
-                lines.push(ratatui::text::Line::from(vec![span]));
+            let is_cursor = idx == state.cursor && self.data_tab_focus == DataTabFocus::AgeSelector;
+            let display = format!("[{}]:{} ", mark, age);
+            let style = if is_cursor {
+                Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else if is_selected(age) {
+                Style::default().fg(Color::Green)
             } else {
-                let last = lines.len() - 1;
-                lines[last].spans.push(span);
-            }
+                Style::default().fg(Color::DarkGray)
+            };
+            items.push(ListItem::new(display).style(style));
         }
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Age Selection (affects all analyses) ");
-        let inner = block.inner(area);
-        block.render(area, f.buffer_mut());
-        let para = Paragraph::new(ratatui::text::Text::from(lines)).wrap(Wrap { trim: false });
-        para.render(inner, f.buffer_mut());
+        let n_sel = if all_selected {
+            state.ages.len()
+        } else {
+            sel.map(|s| s.len()).unwrap_or(0)
+        };
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Age Selection (affects all analyses) — {} of {} selected ", n_sel, state.ages.len())),
+        );
+        Widget::render(list, area, f.buffer_mut());
     }
 
     fn render_data_tab_gene_selector(&self, f: &mut Frame, area: Rect) {
@@ -640,11 +685,12 @@ impl App {
                 true
             }
         };
-        let visible_height = area.height.saturating_sub(2) as usize;
+        // Reserve 1 line for hint, 2 for block borders/title
+        let visible_height = area.height.saturating_sub(3).max(1) as usize;
         let start = state.scroll_offset.min(state.genes.len().saturating_sub(1));
         let end = (start + visible_height).min(state.genes.len());
         let hint = if self.data_tab_focus == DataTabFocus::GeneSelector {
-            "Tab, ↑ or Esc to return • j/k to move • X to toggle • All selected = no filter"
+            "j/k move • g page down • G end • Home/End • X toggle • a=all u=none • Tab/↑/Esc return"
         } else {
             "↓ to enter gene selection • Tab switches Data/Analysis/Viz"
         };
@@ -733,9 +779,7 @@ impl App {
             return Ok(());
         }
 
-        if (key.code == KeyCode::Char('h') || key.code == KeyCode::Char('?'))
-            && self.input_mode == InputMode::Normal
-        {
+        if key.code == KeyCode::Char('?') && self.input_mode == InputMode::Normal {
             self.tabs.show_help = !self.tabs.show_help;
             return Ok(());
         }
@@ -775,21 +819,57 @@ impl App {
                     return Ok(());
                 }
                 if let Some(ref mut state) = self.data_tab_age_selector {
-                    const COLS: usize = 12;
+                    const VISIBLE_HEIGHT: usize = 9;
                     let len = state.ages.len();
                     let mut consumed = true;
                     match key.code {
                         KeyCode::Char('k') => {
-                            state.cursor = state.cursor.saturating_sub(COLS).min(len.saturating_sub(1));
+                            state.cursor = state.cursor.saturating_sub(1);
+                            if state.cursor < state.scroll_offset {
+                                state.scroll_offset = state.cursor;
+                            }
                         }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            state.cursor = (state.cursor + COLS).min(len.saturating_sub(1));
-                        }
-                        KeyCode::Left | KeyCode::Char('h') => {
-                            state.cursor = state.cursor.saturating_sub(1).min(len.saturating_sub(1));
-                        }
-                        KeyCode::Right | KeyCode::Char('l') => {
+                        KeyCode::Char('j') => {
                             state.cursor = (state.cursor + 1).min(len.saturating_sub(1));
+                            if state.cursor >= state.scroll_offset + VISIBLE_HEIGHT {
+                                state.scroll_offset = state.cursor - VISIBLE_HEIGHT + 1;
+                            }
+                        }
+                        KeyCode::Char('g') => {
+                            state.cursor = (state.cursor + VISIBLE_HEIGHT).min(len.saturating_sub(1));
+                            if state.cursor >= state.scroll_offset + VISIBLE_HEIGHT {
+                                state.scroll_offset = state.cursor - VISIBLE_HEIGHT + 1;
+                            }
+                        }
+                        KeyCode::Char('G') => {
+                            state.cursor = len.saturating_sub(1);
+                            state.scroll_offset = len.saturating_sub(VISIBLE_HEIGHT).max(0);
+                        }
+                        KeyCode::Home => {
+                            state.cursor = 0;
+                            state.scroll_offset = 0;
+                        }
+                        KeyCode::End => {
+                            state.cursor = len.saturating_sub(1);
+                            state.scroll_offset = len.saturating_sub(VISIBLE_HEIGHT).max(0);
+                        }
+                        KeyCode::PageDown => {
+                            state.cursor = (state.cursor + VISIBLE_HEIGHT).min(len.saturating_sub(1));
+                            if state.cursor >= state.scroll_offset + VISIBLE_HEIGHT {
+                                state.scroll_offset = state.cursor - VISIBLE_HEIGHT + 1;
+                            }
+                        }
+                        KeyCode::PageUp => {
+                            state.cursor = state.cursor.saturating_sub(VISIBLE_HEIGHT);
+                            if state.cursor < state.scroll_offset {
+                                state.scroll_offset = state.cursor;
+                            }
+                        }
+                        KeyCode::Char('a') => {
+                            self.selected_age_columns = None;
+                        }
+                        KeyCode::Char('u') => {
+                            self.selected_age_columns = Some(std::collections::HashSet::new());
                         }
                         KeyCode::Char('x') | KeyCode::Char('X') => {
                             if let Some(age) = state.ages.get(state.cursor).cloned() {
@@ -844,7 +924,8 @@ impl App {
                 }
                 if let Some(ref mut state) = self.data_tab_gene_selector {
                     let len = state.genes.len();
-                    let visible_height = 12usize; // approximate for scroll
+                    // Match render: area height 12 - 3 (hint + borders) = 9 visible rows
+                    const VISIBLE_HEIGHT: usize = 9;
                     let mut consumed = true;
                     match key.code {
                         KeyCode::Char('k') => {
@@ -855,9 +936,49 @@ impl App {
                         }
                         KeyCode::Char('j') => {
                             state.cursor = (state.cursor + 1).min(len.saturating_sub(1));
-                            if state.cursor >= state.scroll_offset + visible_height {
-                                state.scroll_offset = state.cursor - visible_height + 1;
+                            if state.cursor >= state.scroll_offset + VISIBLE_HEIGHT {
+                                state.scroll_offset = state.cursor - VISIBLE_HEIGHT + 1;
                             }
+                        }
+                        KeyCode::Char('g') => {
+                            // Page down
+                            state.cursor = (state.cursor + VISIBLE_HEIGHT).min(len.saturating_sub(1));
+                            if state.cursor >= state.scroll_offset + VISIBLE_HEIGHT {
+                                state.scroll_offset = state.cursor - VISIBLE_HEIGHT + 1;
+                            }
+                        }
+                        KeyCode::Char('G') => {
+                            // Go to end
+                            state.cursor = len.saturating_sub(1);
+                            state.scroll_offset = len.saturating_sub(VISIBLE_HEIGHT).max(0);
+                        }
+                        KeyCode::Home => {
+                            state.cursor = 0;
+                            state.scroll_offset = 0;
+                        }
+                        KeyCode::End => {
+                            state.cursor = len.saturating_sub(1);
+                            state.scroll_offset = len.saturating_sub(VISIBLE_HEIGHT).max(0);
+                        }
+                        KeyCode::PageDown => {
+                            state.cursor = (state.cursor + VISIBLE_HEIGHT).min(len.saturating_sub(1));
+                            if state.cursor >= state.scroll_offset + VISIBLE_HEIGHT {
+                                state.scroll_offset = state.cursor - VISIBLE_HEIGHT + 1;
+                            }
+                        }
+                        KeyCode::PageUp => {
+                            state.cursor = state.cursor.saturating_sub(VISIBLE_HEIGHT);
+                            if state.cursor < state.scroll_offset {
+                                state.scroll_offset = state.cursor;
+                            }
+                        }
+                        KeyCode::Char('a') => {
+                            // Select all: use all genes (no filter)
+                            self.selected_genes = None;
+                        }
+                        KeyCode::Char('u') => {
+                            // Unselect all: clear selection (empty = no genes, user can re-select)
+                            self.selected_genes = Some(std::collections::HashSet::new());
                         }
                         KeyCode::Char('x') | KeyCode::Char('X') => {
                             if let Some(gene) = state.genes.get(state.cursor).cloned() {
@@ -1065,6 +1186,7 @@ impl App {
                     self.data_tab_age_selector = ages.map(|a| DataTabAgeSelectorState {
                         ages: a,
                         cursor: 0,
+                        scroll_offset: 0,
                     });
                     self.data_tab_gene_selector = genes.map(|g| DataTabGeneSelectorState {
                         genes: g,
@@ -1159,6 +1281,7 @@ impl App {
                         self.data_tab_age_selector = ages.map(|a| DataTabAgeSelectorState {
                             ages: a,
                             cursor: 0,
+                            scroll_offset: 0,
                         });
                         self.data_tab_gene_selector = genes.map(|g| DataTabGeneSelectorState {
                             genes: g,
@@ -1214,7 +1337,7 @@ impl App {
                         });
                         self.pending_analysis = Some(AnalysisRequest::SummaryStats {
                             gene_age_summary: gene_age,
-                            gene_filter: self.effective_genes(),
+                            gene_filter: None, // df is pre-filtered by effective_dataframe
                         });
                         self.tabs.analysis.analysis_status =
                             AnalysisStatus::PendingConfirm { request: "Summary statistics (mean, median, mode, R², p-value, correlation)".to_string() };
@@ -1224,7 +1347,7 @@ impl App {
                             self.pending_analysis = Some(AnalysisRequest::GenesExpressionVsAge {
                                 gene_column: layout.gene_column.clone(),
                                 age_columns: self.effective_age_columns(layout),
-                                gene_filter: self.effective_genes(),
+                                gene_filter: None, // df is pre-filtered
                             });
                             self.tabs.analysis.analysis_status =
                                 AnalysisStatus::PendingConfirm { request: "Expression vs age (all genes)".to_string() };
@@ -1251,7 +1374,7 @@ impl App {
                             self.pending_analysis = Some(AnalysisRequest::GenesSignificantWithAge {
                                 gene_column: layout.gene_column.clone(),
                                 age_columns: self.effective_age_columns(layout),
-                                gene_filter: self.effective_genes(),
+                                gene_filter: None, // df is pre-filtered
                             });
                             self.tabs.analysis.analysis_status =
                                 AnalysisStatus::PendingConfirm { request: "Gene correlation with aging (positive/negative, p<0.05)".to_string() };

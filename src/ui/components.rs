@@ -137,7 +137,7 @@ impl AppTabs {
             (self.active == Tab::Visualizations, "Visualizations"),
         ];
 
-        let header = "  Longevity Gene Expression  │  ? or h = Help  ";
+        let header = "  Longevity Gene Expression  │  ? = Help  ";
         let tabs_block = Block::default()
             .borders(Borders::ALL)
             .title(header);
@@ -196,7 +196,7 @@ impl AppTabs {
             "  ──────────",
             "    Tab / Shift+Tab    Switch between tabs",
             "    q                  Quit application",
-            "    ? or h             Toggle this help screen",
+            "    ?                 Toggle this help screen",
             "    C                  Clear results and visualizations (any tab)",
             "",
             "  DATA TAB — Load your dataset(s)",
