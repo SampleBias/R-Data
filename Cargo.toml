@@ -24,3 +24,10 @@ shellexpand = "3.1"
 tempfile = "3.14"
 opener = "0.7"
 statrs = "0.16"
+# AI & API
+reqwest = { version = "0.12", features = ["json", "stream"] }
+dotenvy = "0.15"
+async-stream = "0.3"
+futures = "0.3"
+console = "0.15"
+urlencoding = "2.1"

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use futures::StreamExt;
 use ratatui::{
     backend::Backend,
     prelude::*,
@@ -10,12 +11,16 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::{
+    client::GlmClient,
+    conversation::Conversation,
     data::{DataLoader, ColumnInfo, DataLayout, build_filtered_dataframe, coerce_expression_columns},
     runner::{AnalysisRequest, AnalysisRunner},
+    tools::{get_all_tools, google_search},
     viz::{VisualizationEngine, available_visualizations},
     config::{Config, ConfigManager},
 };
-use super::components::{AnalysisStatus, AppTabs, LoadStatus, Tab};
+use super::components::{AgentFocus, AgentMessage, AgentStatus, AnalysisStatus, AppTabs, LoadStatus, Tab};
+use super::loading::LoadingWidget;
 
 /// A single loaded dataset with its metadata.
 #[derive(Clone)]
@@ -48,6 +53,12 @@ pub struct App {
     data_tab_focus: DataTabFocus,
     age_group_input: Option<String>,
     pending_analysis: Option<AnalysisRequest>,
+    /// For loading animation
+    loading_tick: u64,
+    /// Pending input to send to Agent (when user presses Enter in Agent tab)
+    pending_agent_input: Option<String>,
+    /// Persistent conversation history for the AI (full context across turns)
+    conversation: Conversation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,6 +188,9 @@ impl App {
             data_tab_focus: DataTabFocus::TabBar,
             age_group_input: None,
             pending_analysis: None,
+            loading_tick: 0,
+            pending_agent_input: None,
+            conversation: Conversation::new(Self::system_prompt()),
         })
     }
 
@@ -184,10 +198,25 @@ impl App {
         let (_event_tx, mut event_rx) = mpsc::unbounded_channel::<AppEvent>();
 
         loop {
+            self.loading_tick = self.loading_tick.wrapping_add(1);
             self.draw(terminal)?;
 
             if self.should_quit {
                 return Ok(());
+            }
+
+            if let Some(input) = self.pending_agent_input.take() {
+                if !input.trim().is_empty() {
+                    if let Err(e) = self.process_ai_turn(terminal, &input).await {
+                        self.tabs.agent.messages.push(AgentMessage {
+                            role: "error".to_string(),
+                            content: format!("Error: {}", e),
+                        });
+                        self.tabs.agent.status = AgentStatus::Idle;
+                        self.tabs.agent.loading_start = None;
+                        self.tabs.agent.focus = AgentFocus::Input;
+                    }
+                }
             }
 
             match event_rx.try_recv() {
@@ -299,6 +328,7 @@ impl App {
                 Tab::Data => self.render_data_tab(f, chunks[1]),
                 Tab::Analysis => self.render_analysis_tab(f, chunks[1]),
                 Tab::Visualizations => self.render_viz_tab(f, chunks[1]),
+                Tab::Agent => self.render_agent_tab(f, chunks[1]),
             }
         })?;
         Ok(())
@@ -570,6 +600,109 @@ impl App {
         }
     }
 
+    fn render_agent_tab(&self, f: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(3),
+            ])
+            .split(area);
+
+        let msg_area = chunks[0];
+        let input_area = chunks[1];
+
+        // Build chat content (messages + streaming) for both Processing and Idle
+        let mut lines: Vec<String> = self.tabs.agent.messages
+            .iter()
+            .flat_map(|m| {
+                let prefix = match m.role.as_str() {
+                    "user" => "You: ",
+                    "assistant" => "Agent: ",
+                    _ => "",
+                };
+                format!("{}{}", prefix, m.content)
+                    .lines()
+                    .map(|l| format!("  {}", l))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        if !self.tabs.agent.streaming_content.is_empty() {
+            lines.push(format!("  Agent: {}", self.tabs.agent.streaming_content));
+        }
+        if lines.is_empty() && self.tabs.agent.status != AgentStatus::Processing {
+            lines.push("Type your request in natural language. Examples:".to_string());
+            lines.push("  • Load sample_data.csv and show summary".to_string());
+            lines.push("  • Find genes significant with age".to_string());
+            lines.push("  • Run expression trend for ENSG0000001".to_string());
+            lines.push("  • Open the visualization in browser".to_string());
+        }
+        let content = lines.join("\n");
+        let content_lines = content.lines().count() as u16;
+        let visible_height = msg_area.height.saturating_sub(2);
+        let max_scroll = content_lines.saturating_sub(visible_height).max(0);
+        let scroll_offset = self.tabs.agent.scroll_offset.min(max_scroll);
+        let skip = content_lines.saturating_sub(visible_height).saturating_sub(scroll_offset).max(0);
+
+        if self.tabs.agent.status == AgentStatus::Processing {
+            // Show streaming chat with loading indicator at top
+            let inner = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(0)])
+                .split(msg_area);
+            let tick_ms = self.tabs.agent.loading_start
+                .map(|s| s.elapsed().as_millis() as u64)
+                .unwrap_or(self.loading_tick);
+            LoadingWidget::new(tick_ms).render(
+                inner[0],
+                f.buffer_mut(),
+            );
+            let chat_title = " Agent │ ↑/↓ scroll ";
+            Paragraph::new(content)
+                .block(Block::default().borders(Borders::ALL).title(chat_title))
+                .wrap(Wrap { trim: false })
+                .scroll((0, skip))
+                .render(inner[1], f.buffer_mut());
+        } else {
+            let chat_title = match self.tabs.agent.focus {
+                AgentFocus::Chat => " Agent │ ↑/↓ scroll │ Esc: back to input ",
+                AgentFocus::Input => " Agent │ Esc: scroll chat ",
+            };
+            let chat_block = Block::default()
+                .borders(Borders::ALL)
+                .title(chat_title)
+                .border_style(match self.tabs.agent.focus {
+                    AgentFocus::Chat => Style::default().fg(Color::Cyan),
+                    AgentFocus::Input => Style::default(),
+                });
+            Paragraph::new(content)
+                .block(chat_block)
+                .wrap(Wrap { trim: false })
+                .scroll((0, skip))
+                .render(msg_area, f.buffer_mut());
+        }
+
+        let input_display = if self.tabs.agent.input.is_empty() {
+            "Type here... (Enter to send)"
+        } else {
+            &self.tabs.agent.input
+        };
+        let input_title = match self.tabs.agent.focus {
+            AgentFocus::Input => " You │ Esc: scroll chat ",
+            AgentFocus::Chat => " You ",
+        };
+        let input_block = Block::default()
+            .borders(Borders::ALL)
+            .title(input_title)
+            .border_style(match self.tabs.agent.focus {
+                AgentFocus::Input => Style::default().fg(Color::Cyan),
+                AgentFocus::Chat => Style::default(),
+            });
+        Paragraph::new(input_display)
+            .block(input_block)
+            .render(input_area, f.buffer_mut());
+    }
+
     fn render_viz_tab(&self, f: &mut Frame, area: Rect) {
         if self.tabs.viz.show_viz && !self.tabs.viz.viz_output.is_empty() {
             let viz_text = self.tabs.viz.viz_output.clone();
@@ -782,6 +915,84 @@ impl App {
         if key.code == KeyCode::Char('?') && self.input_mode == InputMode::Normal {
             self.tabs.show_help = !self.tabs.show_help;
             return Ok(());
+        }
+
+        if self.tabs.active == Tab::Agent
+            && self.input_mode == InputMode::Normal
+            && self.gene_selection.is_none()
+            && self.age_group_input.is_none()
+            && !matches!(self.file_dialog_state, FileDialogState::AwaitingPath)
+        {
+            let content_lines = self.agent_content_line_count();
+            const VISIBLE_ESTIMATE: u16 = 25;
+            let max_scroll = content_lines.saturating_sub(VISIBLE_ESTIMATE).max(0);
+
+            match (self.tabs.agent.focus, key.code) {
+                // Chat focus: scroll keys and Esc to exit
+                (AgentFocus::Chat, KeyCode::Esc) => {
+                    self.tabs.agent.focus = AgentFocus::Input;
+                    return Ok(());
+                }
+                (AgentFocus::Chat, KeyCode::Up) => {
+                    self.tabs.agent.scroll_offset =
+                        (self.tabs.agent.scroll_offset + 1).min(max_scroll);
+                    return Ok(());
+                }
+                (AgentFocus::Chat, KeyCode::Down) => {
+                    self.tabs.agent.scroll_offset =
+                        self.tabs.agent.scroll_offset.saturating_sub(1);
+                    return Ok(());
+                }
+                (AgentFocus::Chat, KeyCode::PageUp) => {
+                    self.tabs.agent.scroll_offset =
+                        (self.tabs.agent.scroll_offset + VISIBLE_ESTIMATE).min(max_scroll);
+                    return Ok(());
+                }
+                (AgentFocus::Chat, KeyCode::PageDown) => {
+                    self.tabs.agent.scroll_offset =
+                        self.tabs.agent.scroll_offset.saturating_sub(VISIBLE_ESTIMATE);
+                    return Ok(());
+                }
+                (AgentFocus::Chat, KeyCode::Home) => {
+                    self.tabs.agent.scroll_offset = max_scroll;
+                    return Ok(());
+                }
+                (AgentFocus::Chat, KeyCode::End) => {
+                    self.tabs.agent.scroll_offset = 0;
+                    return Ok(());
+                }
+                // Input focus: Esc to enter chat (scroll mode)
+                (AgentFocus::Input, KeyCode::Esc) => {
+                    self.tabs.agent.focus = AgentFocus::Chat;
+                    return Ok(());
+                }
+                // Input focus: typing
+                (AgentFocus::Input, KeyCode::Enter) => {
+                    let input = self.tabs.agent.input.clone();
+                    self.tabs.agent.input.clear();
+                    if !input.trim().is_empty() {
+                        self.tabs.agent.messages.push(AgentMessage {
+                            role: "user".to_string(),
+                            content: input.clone(),
+                        });
+                        self.tabs.agent.status = AgentStatus::Processing;
+                        self.tabs.agent.streaming_content.clear();
+                        self.tabs.agent.scroll_offset = 0;
+                        self.tabs.agent.loading_start = Some(std::time::Instant::now());
+                        self.pending_agent_input = Some(input);
+                    }
+                    return Ok(());
+                }
+                (AgentFocus::Input, KeyCode::Backspace) => {
+                    self.tabs.agent.input.pop();
+                    return Ok(());
+                }
+                (AgentFocus::Input, KeyCode::Char(c)) => {
+                    self.tabs.agent.input.push(c);
+                    return Ok(());
+                }
+                _ => {}
+            }
         }
 
         if self.tabs.show_help {
@@ -1554,5 +1765,550 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    async fn process_ai_turn<B: Backend>(
+        &mut self,
+        terminal: &mut ratatui::Terminal<B>,
+        user_input: &str,
+    ) -> Result<()> {
+        let config = ConfigManager::load_config()?;
+        let api_key = config
+            .api_key
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("ZAI_API_KEY not set. Add it to .env or config."))?;
+        let base_url = config.api_base_url.unwrap_or_else(|| {
+            "https://api.z.ai/api/coding/paas/v4".to_string()
+        });
+        let model = config.model.unwrap_or_else(|| "glm-4.7-flash".to_string());
+
+        let client = GlmClient::new(api_key, base_url, model);
+
+        let app_context = self.build_app_context();
+        let message_with_context = if app_context.is_empty() {
+            user_input.to_string()
+        } else {
+            format!(
+                "[APP CONTEXT — you have full visibility into the application state]\n{}\n\n[USER REQUEST]\n{}",
+                app_context,
+                user_input
+            )
+        };
+        self.conversation.add_user_message(&message_with_context);
+
+        let tools = get_all_tools();
+        self.process_ai_response(terminal, &client, &tools)
+            .await
+    }
+
+    fn system_prompt() -> String {
+        r#"You are the R-Data Agent, the orchestrator of the entire R-Data application. You have full context and access to everything happening in the app.
+
+Your role: Guide users through loading data, running analyses, and visualizing results using natural language. You receive APP CONTEXT with each message describing: loaded datasets, active dataset info, recent analyses, current visualization, and user actions across Data/Analysis/Viz tabs.
+
+You have tools to: load_data, get_data_info, get_app_context, list_available_analyses, run_summary_stats, run_correlation, run_histogram, run_expression_vs_age, run_genes_significant_with_age, run_expression_trend, run_young_vs_old, run_volcano_plot, run_expression_heatmap, export_gene_correlation, open_visualization, google_search.
+
+Workflow: Use the APP CONTEXT to understand what the user has already done. Load data first if needed, then run analyses. Use list_available_analyses or get_app_context to see current state.
+Be concise. When you run an analysis, summarize the result for the user.
+For microarray data: Gene ID in column A, ages as column headers. Expression values are log-normalised."#
+            .to_string()
+    }
+
+    /// Count lines in Agent chat content (for scroll)
+    fn agent_content_line_count(&self) -> u16 {
+        let mut count = 0u16;
+        for m in &self.tabs.agent.messages {
+            let prefix = match m.role.as_str() {
+                "user" => "You: ",
+                "assistant" => "Agent: ",
+                _ => "",
+            };
+            count += format!("{}{}", prefix, m.content).lines().count() as u16;
+        }
+        if !self.tabs.agent.streaming_content.is_empty() {
+            count += format!("  Agent: {}", self.tabs.agent.streaming_content).lines().count() as u16;
+        }
+        if count == 0 {
+            count = 5;
+        }
+        count
+    }
+
+    /// Build a string describing current app state for Agent context
+    fn build_app_context(&self) -> String {
+        let mut lines = Vec::new();
+
+        lines.push(format!("Current tab: {}", self.tabs.active.as_str()));
+
+        if self.datasets.is_empty() {
+            lines.push("Datasets: None loaded.".to_string());
+        } else {
+            lines.push(format!("Datasets loaded: {} (active: #{})", self.datasets.len(), self.active_dataset_index + 1));
+            if let Some(ds) = self.active_dataset() {
+                let path = std::path::Path::new(&ds.path).file_name().and_then(|n| n.to_str()).unwrap_or(&ds.path);
+                lines.push(format!("  Active file: {}", path));
+                lines.push(format!("  Rows: {}", ds.dataframe.height()));
+                if let Some(ref layout) = ds.layout {
+                    lines.push(format!("  Layout: {} genes × {} age columns (range {}-{})", layout.gene_count, layout.age_columns.len(), layout.age_min, layout.age_max));
+                }
+                lines.push(format!("  Info: {}", ds.dataframe_info.lines().next().unwrap_or("").to_string()));
+            }
+        }
+
+        if !self.tabs.analysis.results.is_empty() {
+            lines.push(format!("Recent analyses: {} result(s)", self.tabs.analysis.results.len()));
+            if let Some(last) = self.tabs.analysis.results.last() {
+                let preview: String = last.lines().take(2).collect::<Vec<_>>().join(" ");
+                lines.push(format!("  Last: {}...", preview.chars().take(60).collect::<String>()));
+            }
+        }
+
+        if self.tabs.viz.show_viz && !self.tabs.viz.viz_title.is_empty() {
+            lines.push(format!("Current visualization: {}", self.tabs.viz.viz_title));
+            if self.tabs.viz.viz_svg_path.is_some() {
+                lines.push("  (SVG available — use open_visualization to view in browser)".to_string());
+            }
+        }
+
+        if self.selected_genes.is_some() || self.selected_age_columns.is_some() {
+            lines.push("Filters: Gene/age selection active (subset of data in use).".to_string());
+        }
+        if self.age_groups.is_some() {
+            lines.push("Age groups: User-defined Young/Old groups set.".to_string());
+        }
+
+        lines.join("\n")
+    }
+
+    async fn process_ai_response<B: Backend>(
+        &mut self,
+        terminal: &mut ratatui::Terminal<B>,
+        client: &GlmClient,
+        tools: &[crate::client::glm::Tool],
+    ) -> Result<()> {
+        use crate::client::glm::{Message, ToolCall};
+
+        loop {
+            let mut stream = client
+                .chat_stream(self.conversation.get_messages(), Some(tools.to_vec()))
+                .await?;
+
+            let mut content = String::new();
+            let mut tool_calls: Vec<ToolCall> = Vec::new();
+
+            while let Some(chunk_result) = stream.next().await {
+                let chunk = chunk_result?;
+                if let Some(choice) = chunk.choices.first() {
+                    if let Some(c) = &choice.delta.content {
+                        content.push_str(c);
+                        self.tabs.agent.streaming_content = content.clone();
+                        self.tabs.agent.scroll_offset = 0; // Keep at bottom during streaming
+                    let _ = terminal.draw(|f| {
+                        let chunks = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([Constraint::Length(5), Constraint::Min(0)])
+                            .split(f.area());
+                        self.tabs.render_tabs(chunks[0], f.buffer_mut());
+                        self.render_agent_tab(f, chunks[1]);
+                    });
+                    }
+                    if let Some(tcs) = &choice.delta.tool_calls {
+                        for tc in tcs {
+                            while tool_calls.len() <= tc.index {
+                                tool_calls.push(ToolCall {
+                                    id: String::new(),
+                                    call_type: "function".to_string(),
+                                    function: crate::client::glm::FunctionCall {
+                                        name: String::new(),
+                                        arguments: String::new(),
+                                    },
+                                });
+                            }
+                            if let Some(id) = &tc.id {
+                                tool_calls[tc.index].id.push_str(id);
+                            }
+                            if let Some(f) = &tc.function {
+                                if let Some(n) = &f.name {
+                                    tool_calls[tc.index].function.name.push_str(n);
+                                }
+                                if let Some(a) = &f.arguments {
+                                    tool_calls[tc.index].function.arguments.push_str(a);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            self.tabs.agent.streaming_content.clear();
+            let final_content = content;
+
+            let assistant_msg = Message {
+                role: "assistant".to_string(),
+                content: if final_content.is_empty() {
+                    None
+                } else {
+                    Some(final_content.clone())
+                },
+                tool_calls: if tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(tool_calls.clone())
+                },
+                tool_call_id: None,
+            };
+            self.conversation.add_assistant_message(assistant_msg);
+
+            if !final_content.is_empty() {
+                self.tabs.agent.messages.push(AgentMessage {
+                    role: "assistant".to_string(),
+                    content: final_content,
+                });
+                self.tabs.agent.scroll_offset = 0; // Scroll to bottom to show new response
+            }
+
+            if tool_calls.is_empty() {
+                break;
+            }
+
+            for tc in &tool_calls {
+                if tc.function.name.is_empty() {
+                    continue;
+                }
+                let result = self
+                    .execute_tool(&tc.function.name, &tc.function.arguments)
+                    .await;
+                let result_str = result.unwrap_or_else(|e| format!("Error: {}", e));
+                self.conversation.add_tool_result(&tc.id, &result_str);
+            }
+            self.tabs.agent.streaming_content = "Processing results...".to_string();
+            let _ = terminal.draw(|f| {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(5), Constraint::Min(0)])
+                    .split(f.area());
+                self.tabs.render_tabs(chunks[0], f.buffer_mut());
+                self.render_agent_tab(f, chunks[1]);
+            });
+        }
+
+        self.tabs.agent.status = AgentStatus::Idle;
+        self.tabs.agent.loading_start = None;
+        self.tabs.agent.focus = AgentFocus::Input;
+        Ok(())
+    }
+
+    async fn execute_tool(&mut self, name: &str, arguments: &str) -> Result<String> {
+        let args: serde_json::Value =
+            serde_json::from_str(arguments).unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+        match name {
+            "load_data" => {
+                let paths: Vec<String> = args["file_paths"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let expanded: Vec<String> = paths
+                    .iter()
+                    .map(|p| shellexpand::tilde(p).to_string())
+                    .collect();
+                let mut loaded = 0;
+                let mut errors = Vec::new();
+                for path in &expanded {
+                    match DataLoader::load_dataframe(path) {
+                        Ok(mut df) => {
+                            let layout = DataLayout::detect(&df);
+                            if let Some(ref l) = layout {
+                                let _ = coerce_expression_columns(&mut df, l);
+                            }
+                            let info = DataLoader::get_column_info(&df);
+                            let preview = format!("{:.5}", df.head(Some(10)));
+                            let dataframe_info = if let Some(ref l) = layout {
+                                format!(
+                                    "Microarray: {} genes, {} age columns (range {}-{})",
+                                    l.gene_count,
+                                    l.age_columns.len(),
+                                    l.age_min,
+                                    l.age_max
+                                )
+                            } else {
+                                info.iter()
+                                    .map(|c| format!("{}: {}", c.name, c.dtype))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            };
+                            self.datasets.push(LoadedDataset {
+                                path: path.clone(),
+                                dataframe: df,
+                                layout,
+                                column_info: info,
+                                dataframe_info: dataframe_info.clone(),
+                                preview_data: preview,
+                            });
+                            loaded += 1;
+                        }
+                        Err(e) => errors.push(format!("{}: {}", path, e)),
+                    }
+                }
+                self.active_dataset_index = self.datasets.len().saturating_sub(1);
+                if loaded > 0 {
+                    let idx = self.active_dataset_index;
+                    let path = self.datasets[idx].path.clone();
+                    let info = self.datasets[idx].dataframe_info.clone();
+                    let preview = self.datasets[idx].preview_data.clone();
+                    let layout = self.datasets[idx].layout.as_ref();
+                    self.tabs.data.file_path = path;
+                    self.tabs.data.dataframe_info = info;
+                    self.tabs.data.preview_data = preview;
+                    self.data_tab_age_selector = layout.map(|l| DataTabAgeSelectorState {
+                        ages: l.age_columns.clone(),
+                        cursor: 0,
+                        scroll_offset: 0,
+                    });
+                    self.data_tab_gene_selector = layout.and_then(|l| {
+                        self.datasets[idx].dataframe
+                            .column(&l.gene_column)
+                            .ok()
+                            .and_then(|c| c.str().ok())
+                            .map(|s| {
+                                s.into_iter()
+                                    .filter_map(|o| o.map(str::to_string))
+                                    .collect::<Vec<_>>()
+                            })
+                            .map(|g| DataTabGeneSelectorState {
+                                genes: g,
+                                cursor: 0,
+                                scroll_offset: 0,
+                            })
+                    });
+                }
+                Ok(if errors.is_empty() {
+                    format!("Loaded {} file(s) successfully.", loaded)
+                } else {
+                    format!("Loaded {}. Errors: {}", loaded, errors.join("; "))
+                })
+            }
+            "get_data_info" => {
+                let info = self
+                    .active_dataset()
+                    .map(|d| d.dataframe_info.clone())
+                    .unwrap_or_else(|| "No data loaded.".to_string());
+                Ok(info)
+            }
+            "get_app_context" => Ok(self.build_app_context()),
+            "list_available_analyses" => {
+                let viz_list = available_visualizations(
+                    self.active_dataframe(),
+                    self.active_layout(),
+                );
+                let text: String = viz_list
+                    .iter()
+                    .map(|v| {
+                        if v.available {
+                            format!("  [{}] {}", v.key, v.label)
+                        } else {
+                            format!(
+                                "  [{}] {} (disabled: {})",
+                                v.key,
+                                v.label,
+                                v.reason.as_deref().unwrap_or("?")
+                            )
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Ok(format!("Available analyses:\n{}", text))
+            }
+            "run_summary_stats" => {
+                let layout = self.active_layout();
+                let gene_age = layout.map(|l| {
+                    (l.gene_column.clone(), self.effective_age_columns(l))
+                });
+                let req = AnalysisRequest::SummaryStats {
+                    gene_age_summary: gene_age,
+                    gene_filter: None,
+                };
+                self.run_analysis_tool(req).await
+            }
+            "run_correlation" => self.run_analysis_tool(AnalysisRequest::Correlation).await,
+            "run_histogram" => {
+                let mut col = args["column"].as_str().unwrap_or("").to_string();
+                if col.is_empty() {
+                    if let Some(df) = self.active_dataframe() {
+                        col = df
+                            .get_columns()
+                            .iter()
+                            .find(|c| c.dtype().is_numeric())
+                            .map(|c| c.name().to_string())
+                            .unwrap_or_default();
+                    }
+                }
+                let bins = args["bins"].as_u64().unwrap_or(20) as usize;
+                self.run_analysis_tool(AnalysisRequest::Histogram {
+                    column: col,
+                    bins,
+                })
+                .await
+            }
+            "run_expression_vs_age" => {
+                if let Some(layout) = self.active_layout() {
+                    let req = AnalysisRequest::GenesExpressionVsAge {
+                        gene_column: layout.gene_column.clone(),
+                        age_columns: self.effective_age_columns(layout),
+                        gene_filter: None,
+                    };
+                    self.run_analysis_tool(req).await
+                } else {
+                    Ok("Need microarray layout (Gene ID × age columns).".to_string())
+                }
+            }
+            "run_genes_significant_with_age" => {
+                if let Some(layout) = self.active_layout() {
+                    let req = AnalysisRequest::GenesSignificantWithAge {
+                        gene_column: layout.gene_column.clone(),
+                        age_columns: self.effective_age_columns(layout),
+                        gene_filter: None,
+                    };
+                    self.run_analysis_tool(req).await
+                } else {
+                    Ok("Need microarray layout.".to_string())
+                }
+            }
+            "run_expression_trend" => {
+                let gene_ids: Vec<String> = args["gene_ids"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some(layout) = self.active_layout() {
+                    let req = AnalysisRequest::ExpressionTrend {
+                        gene_ids,
+                        gene_column: layout.gene_column.clone(),
+                        age_columns: self.effective_age_columns(layout),
+                    };
+                    self.run_analysis_tool(req).await
+                } else {
+                    Ok("Need microarray layout.".to_string())
+                }
+            }
+            "run_young_vs_old" => {
+                if let Some(layout) = self.active_layout() {
+                    let young_str = args["young_ages"].as_str().unwrap_or("");
+                    let old_str = args["old_ages"].as_str().unwrap_or("");
+                    let (young_cols, old_cols) = if !young_str.is_empty() && !old_str.is_empty() {
+                        if let Some(groups) =
+                            crate::data::parse_age_groups(&format!("Young={},Old={}", young_str, old_str))
+                        {
+                            let age_cols = self.effective_age_columns(layout);
+                            let parts = crate::data::partition_ages_by_groups(&age_cols, &groups);
+                            if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+                                (Some(parts[0].clone()), Some(parts[1].clone()))
+                            } else {
+                                (None, None)
+                            }
+                        } else {
+                            (None, None)
+                        }
+                    } else {
+                        (None, None)
+                    };
+                    let req = AnalysisRequest::YoungVsOld {
+                        gene_column: layout.gene_column.clone(),
+                        age_columns: self.effective_age_columns(layout),
+                        young_cols,
+                        old_cols,
+                    };
+                    self.run_analysis_tool(req).await
+                } else {
+                    Ok("Need microarray layout.".to_string())
+                }
+            }
+            "run_volcano_plot" => {
+                if let Some(layout) = self.active_layout() {
+                    let req = AnalysisRequest::GenesVolcanoPlot {
+                        gene_column: layout.gene_column.clone(),
+                        age_columns: self.effective_age_columns(layout),
+                        gene_filter: None,
+                    };
+                    self.run_analysis_tool(req).await
+                } else {
+                    Ok("Need microarray layout.".to_string())
+                }
+            }
+            "run_expression_heatmap" => {
+                if let Some(layout) = self.active_layout() {
+                    let top_n = args["top_n"].as_u64().unwrap_or(50) as usize;
+                    let req = AnalysisRequest::ExpressionHeatmap {
+                        gene_column: layout.gene_column.clone(),
+                        age_columns: self.effective_age_columns(layout),
+                        top_n,
+                    };
+                    self.run_analysis_tool(req).await
+                } else {
+                    Ok("Need microarray layout.".to_string())
+                }
+            }
+            "export_gene_correlation" => {
+                if let Some(layout) = self.active_layout() {
+                    let req = AnalysisRequest::ExportGeneCorrelation {
+                        gene_column: layout.gene_column.clone(),
+                        age_columns: self.effective_age_columns(layout),
+                    };
+                    self.run_analysis_tool(req).await
+                } else {
+                    Ok("Need microarray layout.".to_string())
+                }
+            }
+            "open_visualization" => {
+                if let Some(ref path) = self.tabs.viz.viz_svg_path {
+                    let _ = opener::open(path);
+                    Ok("Opened visualization in browser.".to_string())
+                } else {
+                    Ok("No visualization to open. Run an analysis first.".to_string())
+                }
+            }
+            "google_search" => {
+                let query = args["query"].as_str().unwrap_or("");
+                let num = args["num_results"].as_u64().unwrap_or(10) as usize;
+                google_search(query, num).await
+            }
+            _ => Ok(format!("Unknown tool: {}", name)),
+        }
+    }
+
+    async fn run_analysis_tool(&mut self, request: AnalysisRequest) -> Result<String> {
+        let df = match self.effective_dataframe() {
+            Some(d) => d,
+            None => {
+                return Ok("No data loaded or filter produced empty dataset.".to_string());
+            }
+        };
+        match AnalysisRunner::run(&df, request) {
+            Ok(result) => {
+                let output = format!(
+                    "{}\n\n{}",
+                    result.summary,
+                    result.details.as_deref().unwrap_or("")
+                );
+                self.tabs.analysis.results.push(output.clone());
+                if let Some(ref viz_config) = result.viz_config {
+                    if let Ok(viz_data) = self.viz_engine.render(&df, viz_config) {
+                        self.tabs.viz.viz_output = viz_data.terminal_output;
+                        self.tabs.viz.viz_title = viz_data.title;
+                        self.tabs.viz.viz_svg_path = viz_data.svg_file_path;
+                        self.tabs.viz.show_viz = true;
+                    }
+                }
+                Ok(output)
+            }
+            Err(e) => Ok(format!("Analysis error: {}", e)),
+        }
     }
 }

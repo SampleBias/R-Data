@@ -1,49 +1,40 @@
 #!/bin/bash
-# Test z.ai Coding API (GLM 4.7) connectivity
+# Test Z.AI Coding Plan API key
+# Uses the coding plan endpoint: https://api.z.ai/api/coding/paas/v4
 
 set -e
+source .env 2>/dev/null || true
 
-# Load .env if present
-if [ -f .env ]; then
-    set -a
-    source .env
-    set +a
+API_KEY="${ZAI_API_KEY:-${ZHIPU_API_KEY}}"
+if [ -z "$API_KEY" ]; then
+  echo "Error: Set ZAI_API_KEY or ZHIPU_API_KEY in .env"
+  exit 1
 fi
 
-if [ -z "$R_DATA_AGENT_API_KEY" ]; then
-    echo "Error: R_DATA_AGENT_API_KEY not set. Add it to .env or export it."
-    exit 1
-fi
-
-echo "Testing z.ai Coding API (GLM 4.7)..."
+echo "Testing Z.AI Coding Plan API..."
+echo "Endpoint: https://api.z.ai/api/coding/paas/v4/chat/completions"
+echo "Model: glm-4.7-flash"
 echo ""
 
-response=$(curl -s -w "\n%{http_code}" -X POST "https://api.z.ai/api/coding/paas/v4/chat/completions" \
+RESP=$(curl -s -w "\n%{http_code}" -X POST "https://api.z.ai/api/coding/paas/v4/chat/completions" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $R_DATA_AGENT_API_KEY" \
+  -H "Authorization: Bearer $API_KEY" \
   -d '{
-    "model": "glm-4.7",
-    "messages": [
-      {"role": "system", "content": "You are a helpful assistant. Reply with exactly: OK"},
-      {"role": "user", "content": "Say OK"}
-    ],
-    "stream": false
+    "model": "glm-4.7-flash",
+    "messages": [{"role": "user", "content": "Say hello in one word."}],
+    "stream": false,
+    "max_tokens": 50
   }')
 
-# Split response body and status code
-http_code=$(echo "$response" | tail -n1)
-body=$(echo "$response" | sed '$d')
+HTTP_CODE=$(echo "$RESP" | tail -n1)
+BODY=$(echo "$RESP" | sed '$d')
 
-if [ "$http_code" = "200" ]; then
-    echo "✓ API test passed (HTTP 200)"
-    content=$(echo "$body" | grep -o '"content":"[^"]*"' | head -1 | sed 's/"content":"//;s/"$//')
-    if [ -n "$content" ]; then
-        echo "✓ Response: $content"
-    fi
-    echo ""
-    echo "API is working correctly."
+if [ "$HTTP_CODE" = "200" ]; then
+  echo "✓ API key valid!"
+  CONTENT=$(echo "$BODY" | jq -r '.choices[0].message.content // .error.message // .message // "?"' 2>/dev/null || echo "$BODY")
+  echo "Response: $CONTENT"
 else
-    echo "✗ API test failed (HTTP $http_code)"
-    echo "Response: $body"
-    exit 1
+  echo "✗ API error (HTTP $HTTP_CODE)"
+  echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+  exit 1
 fi

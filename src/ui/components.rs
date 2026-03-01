@@ -5,6 +5,7 @@ use ratatui::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
+    Agent,
     Data,
     Analysis,
     Visualizations,
@@ -14,9 +15,58 @@ impl Tab {
     #[allow(dead_code)]
     pub fn as_str(&self) -> &str {
         match self {
+            Tab::Agent => "Agent",
             Tab::Data => "Data",
             Tab::Analysis => "Analysis",
             Tab::Visualizations => "Viz",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentStatus {
+    Idle,
+    Processing,
+}
+
+/// Focus within the Agent tab: Chat (scroll) or Input (type)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentFocus {
+    /// Scrolling the conversation (↑/↓ scroll, Esc back to input)
+    Chat,
+    /// Typing in the input box (Enter send, Tab to focus chat)
+    Input,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentMessage {
+    pub role: String,
+    pub content: String,
+}
+
+pub struct AgentTab {
+    pub input: String,
+    pub messages: Vec<AgentMessage>,
+    pub status: AgentStatus,
+    pub streaming_content: String,
+    /// Scroll offset: lines from bottom (0 = at bottom, showing latest)
+    pub scroll_offset: u16,
+    /// When loading started (for animation)
+    pub loading_start: Option<std::time::Instant>,
+    /// Focus: Chat (scroll) or Input (type)
+    pub focus: AgentFocus,
+}
+
+impl Default for AgentTab {
+    fn default() -> Self {
+        Self {
+            input: String::new(),
+            messages: Vec::new(),
+            status: AgentStatus::Idle,
+            streaming_content: String::new(),
+            scroll_offset: 0,
+            loading_start: None,
+            focus: AgentFocus::Input,
         }
     }
 }
@@ -94,6 +144,7 @@ impl Default for VizTab {
 }
 
 pub struct AppTabs {
+    pub agent: AgentTab,
     pub data: DataTab,
     pub analysis: AnalysisTab,
     pub viz: VizTab,
@@ -104,10 +155,11 @@ pub struct AppTabs {
 impl Default for AppTabs {
     fn default() -> Self {
         Self {
+            agent: AgentTab::default(),
             data: DataTab::default(),
             analysis: AnalysisTab::default(),
             viz: VizTab::default(),
-            active: Tab::Data,
+            active: Tab::Agent,
             show_help: false,
         }
     }
@@ -116,15 +168,17 @@ impl Default for AppTabs {
 impl AppTabs {
     pub fn next_tab(&mut self) {
         self.active = match self.active {
+            Tab::Agent => Tab::Data,
             Tab::Data => Tab::Analysis,
             Tab::Analysis => Tab::Visualizations,
-            Tab::Visualizations => Tab::Data,
+            Tab::Visualizations => Tab::Agent,
         }
     }
 
     pub fn previous_tab(&mut self) {
         self.active = match self.active {
-            Tab::Data => Tab::Visualizations,
+            Tab::Agent => Tab::Visualizations,
+            Tab::Data => Tab::Agent,
             Tab::Analysis => Tab::Data,
             Tab::Visualizations => Tab::Analysis,
         }
@@ -132,12 +186,13 @@ impl AppTabs {
 
     pub fn render_tabs(&self, area: Rect, buf: &mut Buffer) {
         let titles: Vec<(bool, &str)> = vec![
+            (self.active == Tab::Agent, "Agent"),
             (self.active == Tab::Data, "Data"),
             (self.active == Tab::Analysis, "Analysis"),
-            (self.active == Tab::Visualizations, "Visualizations"),
+            (self.active == Tab::Visualizations, "Viz"),
         ];
 
-        let header = "  Longevity Gene Expression  │  ? = Help  ";
+        let header = "  R-Data Agent — Longevity Gene Expression  │  ? = Help  ";
         let tabs_block = Block::default()
             .borders(Borders::ALL)
             .title(header);
@@ -157,9 +212,12 @@ impl AppTabs {
 
         let tabs_layout = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints(
-                [Constraint::Length(12), Constraint::Length(12), Constraint::Length(14)]
-            )
+            .constraints([
+                Constraint::Length(12),
+                Constraint::Length(10),
+                Constraint::Length(12),
+                Constraint::Length(10),
+            ])
             .split(tabs_area);
 
         for (i, (is_active, name)) in titles.iter().enumerate() {
@@ -230,6 +288,16 @@ impl AppTabs {
             "  ─────────────────────────────────────",
             "    Space             Toggle display",
             "    O                 Open chart in browser (full-quality SVG)",
+            "",
+            "  AGENT TAB — Orchestrates the app (AI-powered)",
+            "  ────────────────────────────────────────────────",
+            "    Type your request  e.g. \"Load data.csv and show genes significant with age\"",
+            "    Enter              Send message to Agent (has full app context)",
+            "    Esc                Toggle: input ↔ chat (cyan border = scroll mode)",
+            "    ↑/↓ PageUp/Down    Scroll conversation (when chat focused)",
+            "    PageUp/PageDown    Scroll by page",
+            "    Home/End           Jump to top/bottom",
+            "    /tools            List available tools",
             "",
             "  Supported file formats: .csv  .json  .xlsx",
         ];

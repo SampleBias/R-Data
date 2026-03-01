@@ -1,9 +1,12 @@
 # R-Data Agent — Longevity Gene Expression
 
-A Rust-based TUI tool for analyzing gene expression microarray data, focused on longevity research and aging markers (expression changes from young → old).
+A Rust-based **AI-powered data science agent** for analyzing gene expression microarray data, focused on longevity research and aging markers. Controlled by natural language via GLM 4.7.
 
 ## Features
 
+- **Natural Language Control**: Chat tab — type requests like "Load sample_data.csv and find genes significant with age"
+- **AI Tool Calling**: GLM 4.7 invokes R-Data operations (load, analyze, visualize) via function calling
+- **Web Search**: Optional SerpAPI for longevity research, gene lookups
 - **Microarray Data Layout**: Automatic detection of Gene ID (column A) × age (columns B+). Supports replicates (same age in multiple columns).
 - **Data Loading**: CSV, JSON, and Excel (.xlsx) via Polars.
 - **Statistical Analysis**:
@@ -77,9 +80,32 @@ cargo run
 
 ## Configuration
 
+Create a `.env` file (or set environment variables):
+
+```
+ZAI_API_KEY=your_zai_api_key_here
+SERPAPI_KEY=your_serpapi_key_here  # optional, for web search
+```
+
+Get your API key from [Z.AI](https://z.ai/model-api). Uses **GLM 4.7** with the **Coding Plan** endpoint (`https://api.z.ai/api/coding/paas/v4`).
+
+Default model is `glm-4.7-flash`. If you get "Unknown Model" (error 1211), try setting `model = "glm-4.7-flash"` in `~/.config/r-data-agent/config.toml`, or try `glm-4.7`, `glm-5`, or `glm-4.5-air`.
+
+### Test your API key
+
+```bash
+cargo run -- --test-api
+```
+
+Or use the shell script: `./test_api.sh`
+
 Config file: `~/.config/r-data-agent/config.toml`
 
 ```toml
+# API (Coding Plan)
+api_base_url = "https://api.z.ai/api/coding/paas/v4"
+model = "glm-4.7-flash"   # or glm-4.7, glm-5, glm-4.5-air
+
 viz_width = 800
 viz_height = 600
 default_bins = 20
