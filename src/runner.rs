@@ -331,19 +331,21 @@ impl AnalysisRunner {
                     )?;
                 let mut significant: Vec<_> = results.into_iter().filter(|r| r.significant).collect();
                 significant.sort_by(|a, b| a.p_value.partial_cmp(&b.p_value).unwrap());
-                let n_pos = significant.iter().filter(|r| r.correlation > 0.0).count();
-                let n_neg = significant.iter().filter(|r| r.correlation < 0.0).count();
+                let pos: Vec<_> = significant.iter().filter(|r| r.correlation > 0.0).cloned().collect();
+                let neg: Vec<_> = significant.iter().filter(|r| r.correlation < 0.0).cloned().collect();
+                let n_pos = pos.len();
+                let n_neg = neg.len();
                 let summary = format!(
                     "Genes significant with age (p<0.05): {} total ({} positive, {} negative)",
                     significant.len(),
                     n_pos,
                     n_neg
                 );
-                let table = format_genes_age_table(&significant, true);
+                let details = format_genes_significant_pos_neg(&pos, &neg);
                 let points = to_gene_correlation_points(&significant);
                 Ok(AnalysisResult {
                     summary: summary.clone(),
-                    details: Some(format!("{}\n\n{}", summary, table)),
+                    details: Some(format!("{}\n\n{}", summary, details)),
                     viz_config: Some(VisualizationConfig::VolcanoPlot(
                         crate::viz::VolcanoPlotConfig { points },
                     )),
@@ -428,6 +430,58 @@ fn to_gene_correlation_points(
             direction: r.direction.to_string(),
         })
         .collect()
+}
+
+fn format_genes_significant_pos_neg(
+    pos: &[crate::data::GeneAgeCorrelation],
+    neg: &[crate::data::GeneAgeCorrelation],
+) -> String {
+    let header = "Gene ID (Ensembl)     | Corr    | Slope   | R²     | p-value";
+    let sep = "---------------------|--------|--------|--------|---------";
+    let mut lines = Vec::new();
+
+    lines.push("POSITIVE (expression ↑ with age)".to_string());
+    lines.push(header.to_string());
+    lines.push(sep.to_string());
+    if pos.is_empty() {
+        lines.push("  (none)".to_string());
+    } else {
+        for r in pos.iter().take(200) {
+            lines.push(format!(
+                "{:<20} | {:>7.3} | {:>7.4} | {:>6.3} | {:>7.4}",
+                r.gene_id.chars().take(20).collect::<String>(),
+                r.correlation,
+                r.slope,
+                r.r_squared,
+                r.p_value,
+            ));
+        }
+        if pos.len() > 200 {
+            lines.push(format!("... and {} more positive", pos.len() - 200));
+        }
+    }
+    lines.push("".to_string());
+    lines.push("NEGATIVE (expression ↓ with age)".to_string());
+    lines.push(header.to_string());
+    lines.push(sep.to_string());
+    if neg.is_empty() {
+        lines.push("  (none)".to_string());
+    } else {
+        for r in neg.iter().take(200) {
+            lines.push(format!(
+                "{:<20} | {:>7.3} | {:>7.4} | {:>6.3} | {:>7.4}",
+                r.gene_id.chars().take(20).collect::<String>(),
+                r.correlation,
+                r.slope,
+                r.r_squared,
+                r.p_value,
+            ));
+        }
+        if neg.len() > 200 {
+            lines.push(format!("... and {} more negative", neg.len() - 200));
+        }
+    }
+    lines.join("\n")
 }
 
 fn format_genes_age_table(
