@@ -282,7 +282,7 @@ impl VisualizationEngine {
 
             let mut chart = ChartBuilder::on(&root)
                 .caption(
-                    format!("Linear Regression: R² = {:.4}", reg.r_squared),
+                    format!("y = {:.4}x + {:.4}  (R² = {:.4})", reg.slope, reg.intercept, reg.r_squared),
                     ("sans-serif", 28).into_font().color(&BLACK),
                 )
                 .x_label_area_size(50)
@@ -334,7 +334,7 @@ impl VisualizationEngine {
             svg_output: buffer,
             svg_file_path,
             terminal_output,
-            title: format!("Linear Regression: {} vs {} (R²={:.4})", config.y_column, config.x_column, reg.r_squared),
+            title: format!("y = {:.4}x + {:.4}  |  {} vs {}  R²={:.4}", reg.slope, reg.intercept, config.y_column, config.x_column, reg.r_squared),
         })
     }
 
@@ -399,7 +399,8 @@ impl VisualizationEngine {
 
         let mut lines = vec![
             format!("Linear Regression: {} vs {}  R²={:.4}", y_label, x_label, reg.r_squared),
-            format!("  slope={:.4}  intercept={:.4}", reg.slope, reg.intercept),
+            format!("  Formula: y = {:.4}x + {:.4}", reg.slope, reg.intercept),
+            format!("  (slope={:.4}, intercept={:.4})", reg.slope, reg.intercept),
         ];
         for row in &grid {
             lines.push(format!("  {}", row.iter().collect::<String>()));
@@ -1105,6 +1106,7 @@ impl VisualizationEngine {
         let y_range = (y_max - y_min).max(0.1);
 
         let mut buffer = String::new();
+        let mut formulas = Vec::new();
         {
             let root = SVGBackend::with_string(&mut buffer, (self.width, self.height))
                 .into_drawing_area();
@@ -1152,6 +1154,7 @@ impl VisualizationEngine {
                     (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x)
                 };
                 let intercept = (sum_y - slope * sum_x) / n;
+                formulas.push(format!("  {}: y = {:.4}x + {:.4}", data.gene_id, slope, intercept));
                 let line_start = x_min - 0.05 * x_range;
                 let line_end = x_max + 0.05 * x_range;
                 chart.draw_series(std::iter::once(PathElement::new(
@@ -1173,9 +1176,10 @@ impl VisualizationEngine {
 
         let gene_labels: String = trend_data.iter().map(|d| d.gene_id.as_str()).collect::<Vec<_>>().join(", ");
         let terminal_output = format!(
-            "Expression vs Age (Regression): {}\n  Genes: {}",
+            "Expression vs Age (Regression): {}\n  Genes: {}\n\nFormulas:\n{}",
             trend_data.len(),
-            gene_labels
+            gene_labels,
+            formulas.join("\n")
         );
         let svg_file_path = Self::save_svg_to_temp(&buffer, "rdata-regression").ok();
         Ok(ChartData {

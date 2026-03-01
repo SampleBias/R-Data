@@ -29,7 +29,8 @@ Expected microarray layout:
 
 - **Row 1**: `Gene ID` in column A, ages (17, 18, 21, 24, …) as column headers.
 - **Column A**: Ensembl gene IDs (e.g. `ENSG0000001`).
-- **Columns B+**: Expression values (float) per gene at each age.
+- **Columns B+**: Log-normalised expression values (float) per gene at each age.
+- **One value per gene**: When multiple probes map to the same gene, use the highest probe value.
 - Same age may appear in multiple columns (replicates).
 
 ## Installation

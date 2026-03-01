@@ -77,7 +77,11 @@ pub fn available_visualizations(
         },
         VizAvailability {
             key: 'r',
-            label: "Expression vs age (linear regression)".to_string(),
+            label: if has_layout {
+                "Expression vs age (all genes → volcano plot)".to_string()
+            } else {
+                "Linear regression (x vs y scatter)".to_string()
+            },
             available: has_layout || numeric_count >= 2,
             reason: if has_layout {
                 None

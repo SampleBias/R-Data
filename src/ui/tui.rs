@@ -256,7 +256,8 @@ impl App {
                 "Multiple files: separate with comma or semicolon",
                 "  ./data/a.csv, ./data/b.csv",
                 "",
-                "Microarray format: Gene ID (col A), ages as column headers (17, 18, 21...).",
+                "Microarray: log-normalised expression, Gene ID (col A) × age (cols B+).",
+                "One value per gene (highest probe when multiple map to same gene).",
                 "",
                 "Press Enter to load • Esc to cancel",
             ];
@@ -335,7 +336,7 @@ impl App {
                 .wrap(Wrap { trim: false })
                 .render(chunks[0], f.buffer_mut());
 
-            let load_hint = "Press L to load file(s). Multiple paths: comma or semicolon separated. CSV, JSON, or Excel .xlsx";
+            let load_hint = "Press L to load file(s). Microarray: log-normalised expression, gene ID × age. CSV, JSON, or Excel .xlsx";
             Paragraph::new(load_hint)
                 .block(Block::default().borders(Borders::ALL).title(" Load File "))
                 .render(chunks[1], f.buffer_mut());
@@ -860,7 +861,7 @@ impl App {
                                 let preview = format!("{:.5}", df.head(Some(10)));
                                 let dataframe_info = if let Some(ref l) = layout {
                                     format!(
-                                        "Microarray layout detected\nGenes: {} | Age columns: {} (range {}-{})\n\n{}",
+                                        "Microarray layout detected (log-normalised expression)\nGenes: {} | Age columns: {} (range {}-{})\n\n{}",
                                         l.gene_count,
                                         l.age_columns.len(),
                                         l.age_min,
