@@ -65,6 +65,17 @@ pub enum AnalysisRequest {
         gene_column: String,
         age_columns: Vec<String>,
     },
+    /// Expression heatmap: genes × ages (top N genes by |correlation|).
+    ExpressionHeatmap {
+        gene_column: String,
+        age_columns: Vec<String>,
+        top_n: usize,
+    },
+    /// Export gene correlation results (correlation, slope, R², p-value, fold-change) to CSV.
+    ExportGeneCorrelation {
+        gene_column: String,
+        age_columns: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -93,15 +104,17 @@ impl AnalysisRunner {
                     let n = results.len();
                     let mean_corr = results.iter().map(|r| r.correlation).sum::<f64>() / n.max(1) as f64;
                     let mean_r2 = results.iter().map(|r| r.r_squared).sum::<f64>() / n.max(1) as f64;
+                    let mean_slope = results.iter().map(|r| r.slope).sum::<f64>() / n.max(1) as f64;
+                    let mean_fc = results.iter().map(|r| r.fold_change).sum::<f64>() / n.max(1) as f64;
                     let n_sig = results.iter().filter(|r| r.significant).count();
                     let n_pos = results.iter().filter(|r| r.significant && r.correlation > 0.0).count();
                     let n_neg = results.iter().filter(|r| r.significant && r.correlation < 0.0).count();
                     let summary_section = format!(
-                        "\n\n--- Gene-age correlation summary (R², p-value, correlation) ---\n\
-                        Genes: {} | Mean correlation: {:.4} | Mean R²: {:.4}\n\
+                        "\n\n--- Gene-age correlation summary (R², p-value, correlation, slope, fold-change) ---\n\
+                        Genes: {} | Mean correlation: {:.4} | Mean R²: {:.4} | Mean slope: {:.4} | Mean fold-change: {:.4}\n\
                         Significant (p<0.05): {} total ({} positive, {} negative)\n\
-                        Press [g] for full gene-by-gene table.",
-                        n, mean_corr, mean_r2, n_sig, n_pos, n_neg
+                        Press [g] for full table • [x] to export CSV",
+                        n, mean_corr, mean_r2, mean_slope, mean_fc, n_sig, n_pos, n_neg
                     );
                     details.push_str(&summary_section);
                 }
@@ -456,8 +469,92 @@ impl AnalysisRunner {
                     )),
                 })
             }
+            AnalysisRequest::ExpressionHeatmap {
+                gene_column,
+                age_columns,
+                top_n,
+            } => {
+                let results =
+                    crate::data::StatisticalAnalyzer::genes_expression_vs_age(
+                        df, &gene_column, &age_columns, None,
+                    )?;
+                let mut sorted = results.clone();
+                sorted.sort_by(|a, b| a.correlation.abs().partial_cmp(&b.correlation.abs()).unwrap());
+                sorted.reverse();
+                let gene_ids: Vec<String> = sorted
+                    .iter()
+                    .take(top_n)
+                    .map(|r| r.gene_id.clone())
+                    .collect();
+                let summary = format!(
+                    "Expression heatmap: top {} genes by |correlation|",
+                    gene_ids.len()
+                );
+                Ok(AnalysisResult {
+                    summary: summary.clone(),
+                    details: Some(summary),
+                    viz_config: Some(VisualizationConfig::ExpressionHeatmap(
+                        crate::viz::ExpressionHeatmapConfig {
+                            gene_ids,
+                            gene_column,
+                            age_columns,
+                        },
+                    )),
+                })
+            }
+            AnalysisRequest::ExportGeneCorrelation {
+                gene_column,
+                age_columns,
+            } => {
+                let results =
+                    crate::data::StatisticalAnalyzer::genes_expression_vs_age(
+                        df, &gene_column, &age_columns, None,
+                    )?;
+                let path = export_gene_correlation_csv(&results)?;
+                let summary = format!(
+                    "Exported {} genes to CSV:\n{}",
+                    results.len(),
+                    path.display()
+                );
+                Ok(AnalysisResult {
+                    summary: summary.clone(),
+                    details: Some(summary),
+                    viz_config: None,
+                })
+            }
         }
     }
+}
+
+fn export_gene_correlation_csv(
+    results: &[crate::data::GeneAgeCorrelation],
+) -> Result<std::path::PathBuf> {
+    use std::io::Write;
+    let mut temp = tempfile::Builder::new()
+        .prefix("rdata-gene-correlation-")
+        .suffix(".csv")
+        .tempfile()?;
+    writeln!(
+        temp,
+        "gene_id,correlation,slope,r_squared,p_value,fold_change,significant,direction"
+    )?;
+    for r in results {
+        writeln!(
+            temp,
+            "{},{:.6},{:.6},{:.6},{:.6},{:.6},{},{}",
+            r.gene_id,
+            r.correlation,
+            r.slope,
+            r.r_squared,
+            r.p_value,
+            r.fold_change,
+            r.significant,
+            r.direction
+        )?;
+    }
+    temp.flush()?;
+    let path = temp.into_temp_path().keep()?;
+    Ok(path.into())
 }
 
 fn to_gene_correlation_points(
@@ -479,8 +576,8 @@ fn format_genes_significant_pos_neg(
     pos: &[crate::data::GeneAgeCorrelation],
     neg: &[crate::data::GeneAgeCorrelation],
 ) -> String {
-    let header = "Gene ID (Ensembl)     | Corr    | Slope   | R²     | p-value";
-    let sep = "---------------------|--------|--------|--------|---------";
+    let header = "Gene ID (Ensembl)     | Corr    | Slope   | R²     | p-value | FoldChg";
+    let sep = "---------------------|--------|--------|--------|---------|--------";
     let mut lines = Vec::new();
 
     lines.push("POSITIVE (expression ↑ with age)".to_string());
@@ -491,12 +588,13 @@ fn format_genes_significant_pos_neg(
     } else {
         for r in pos.iter().take(200) {
             lines.push(format!(
-                "{:<20} | {:>7.3} | {:>7.4} | {:>6.3} | {:>7.4}",
+                "{:<20} | {:>7.3} | {:>7.4} | {:>6.3} | {:>7.4} | {:>7.3}",
                 r.gene_id.chars().take(20).collect::<String>(),
                 r.correlation,
                 r.slope,
                 r.r_squared,
                 r.p_value,
+                r.fold_change,
             ));
         }
         if pos.len() > 200 {
@@ -512,12 +610,13 @@ fn format_genes_significant_pos_neg(
     } else {
         for r in neg.iter().take(200) {
             lines.push(format!(
-                "{:<20} | {:>7.3} | {:>7.4} | {:>6.3} | {:>7.4}",
+                "{:<20} | {:>7.3} | {:>7.4} | {:>6.3} | {:>7.4} | {:>7.3}",
                 r.gene_id.chars().take(20).collect::<String>(),
                 r.correlation,
                 r.slope,
                 r.r_squared,
                 r.p_value,
+                r.fold_change,
             ));
         }
         if neg.len() > 200 {
@@ -538,18 +637,19 @@ fn format_genes_age_table(
             "No results.".to_string()
         };
     }
-    let header = "Gene ID (Ensembl)     | Corr    | Slope   | R²     | p-value | Dir";
-    let sep = "---------------------|--------|--------|--------|---------|-----";
+    let header = "Gene ID (Ensembl)     | Corr    | Slope   | R²     | p-value | FoldChg | Dir";
+    let sep = "---------------------|--------|--------|--------|---------|--------|-----";
     let mut lines = vec![header.to_string(), sep.to_string()];
     for r in results.iter().take(100) {
         let sig = if r.significant { "*" } else { " " };
         lines.push(format!(
-            "{:<20} | {:>7.3} | {:>7.4} | {:>6.3} | {:>7.4} | {} {}",
+            "{:<20} | {:>7.3} | {:>7.4} | {:>6.3} | {:>7.4} | {:>7.3} | {} {}",
             r.gene_id.chars().take(20).collect::<String>(),
             r.correlation,
             r.slope,
             r.r_squared,
             r.p_value,
+            r.fold_change,
             r.direction.chars().take(3).collect::<String>(),
             sig
         ));

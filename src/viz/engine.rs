@@ -59,6 +59,9 @@ impl VisualizationEngine {
             VisualizationConfig::ExpressionVsAgeRegression(cfg) => {
                 self.render_expression_vs_age_regression(df, cfg)
             }
+            VisualizationConfig::ExpressionHeatmap(cfg) => {
+                self.render_expression_heatmap(df, cfg)
+            }
         }
     }
 
@@ -1192,6 +1195,131 @@ impl VisualizationEngine {
             svg_file_path,
             terminal_output,
             title: "Expression vs Age (Regression)".to_string(),
+        })
+    }
+
+    fn render_expression_heatmap(
+        &self,
+        df: &DataFrame,
+        config: &super::types::ExpressionHeatmapConfig,
+    ) -> Result<ChartData> {
+        let trend_data = StatisticalAnalyzer::expression_trend(
+            df,
+            &config.gene_column,
+            &config.age_columns,
+            &config.gene_ids,
+        )?;
+        if trend_data.is_empty() {
+            return Ok(ChartData {
+                chart_type: VisualizationType::ExpressionHeatmap,
+                svg_output: "No data".to_string(),
+                svg_file_path: None,
+                terminal_output: "No expression data for selected genes".to_string(),
+                title: "Expression Heatmap".to_string(),
+            });
+        }
+
+        let n_genes = trend_data.len();
+        let n_ages = config.age_columns.len();
+        if n_ages == 0 {
+            return Ok(ChartData {
+                chart_type: VisualizationType::ExpressionHeatmap,
+                svg_output: "No age columns".to_string(),
+                svg_file_path: None,
+                terminal_output: "No age columns".to_string(),
+                title: "Expression Heatmap".to_string(),
+            });
+        }
+
+        let mut matrix: Vec<Vec<f64>> = Vec::with_capacity(n_genes);
+        for data in &trend_data {
+            let row: Vec<f64> = data.points.iter().map(|p| p.expression).collect();
+            matrix.push(row);
+        }
+
+        let z_matrix: Vec<Vec<f64>> = matrix
+            .iter()
+            .map(|row| {
+                let mean = row.iter().sum::<f64>() / row.len() as f64;
+                let variance = row.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / row.len().max(1) as f64;
+                let std = variance.sqrt().max(1e-10);
+                row.iter().map(|v| (v - mean) / std).collect()
+            })
+            .collect();
+
+        let all_vals: Vec<f64> = z_matrix.iter().flat_map(|r| r.iter().copied()).collect();
+        let z_min = all_vals.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let z_max = all_vals.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+        let cell_w = 40;
+        let cell_h = 24;
+        let label_w = 60;
+        let label_h = 20;
+        let n_cols = n_ages.min(12);
+        let n_rows = n_genes.min(20);
+
+        let total_w = label_w + (n_cols as i32) * cell_w;
+        let total_h = label_h + (n_rows as i32) * cell_h;
+
+        let mut buffer = String::new();
+        {
+            let root = SVGBackend::with_string(&mut buffer, (total_w as u32, total_h as u32))
+                .into_drawing_area();
+            root.fill(&BG_LIGHT_GRAY)?;
+
+            root.draw(&Text::new(
+                "Expression Heatmap (genes × ages, z-scored)",
+                (total_w / 2 - 100, 10),
+                ("sans-serif", 18).into_font().color(&BLACK),
+            ))?;
+
+            for i in 0..n_rows {
+                for j in 0..n_cols {
+                    let z = z_matrix.get(i).and_then(|r| r.get(j)).copied().unwrap_or(0.0);
+                    let color = if z >= 0.0 {
+                        let t = (z / z_max.max(0.01)).min(1.0);
+                        RED.mix(t)
+                    } else {
+                        let t = ((-z) / (-z_min).max(0.01)).min(1.0);
+                        BLUE.mix(t)
+                    };
+                    let x = label_w + (j as i32) * cell_w;
+                    let y = label_h + (i as i32) * cell_h;
+                    root.draw(&Rectangle::new(
+                        [(x, y), (x + cell_w, y + cell_h)],
+                        color.filled(),
+                    ))?;
+                }
+                let gene_label = trend_data[i].gene_id.chars().take(14).collect::<String>();
+                root.draw(&Text::new(
+                    gene_label,
+                    (2, label_h + (i as i32) * cell_h + cell_h / 2 - 6),
+                    ("sans-serif", 10).into_font().color(&BLACK),
+                ))?;
+            }
+            for j in 0..n_cols {
+                let age_label = config.age_columns[j].chars().take(6).collect::<String>();
+                root.draw(&Text::new(
+                    age_label,
+                    (label_w + (j as i32) * cell_w + cell_w / 2 - 12, label_h - 2),
+                    ("sans-serif", 9).into_font().color(&BLACK),
+                ))?;
+            }
+        }
+
+        let terminal_output = format!(
+            "Expression Heatmap: {} genes × {} ages (z-scored)\n  Top genes: {}",
+            n_genes,
+            n_ages,
+            trend_data.iter().map(|d| d.gene_id.as_str()).take(5).collect::<Vec<_>>().join(", ")
+        );
+        let svg_file_path = Self::save_svg_to_temp(&buffer, "rdata-expr-heatmap").ok();
+        Ok(ChartData {
+            chart_type: VisualizationType::ExpressionHeatmap,
+            svg_output: buffer,
+            svg_file_path,
+            terminal_output,
+            title: "Expression Heatmap (genes × ages)".to_string(),
         })
     }
 }

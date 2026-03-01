@@ -1097,6 +1097,7 @@ impl App {
                         .collect();
                     let action = state.action.clone();
                     let layout = self.active_layout().cloned().unwrap();
+                    let age_columns = self.effective_age_columns(&layout);
                     self.gene_selection = None;
                     if !selected.is_empty() {
                         match action {
@@ -1104,7 +1105,7 @@ impl App {
                                 self.pending_analysis = Some(AnalysisRequest::ExpressionTrend {
                                     gene_ids: selected,
                                     gene_column: layout.gene_column,
-                                    age_columns: layout.age_columns,
+                                    age_columns,
                                 });
                                 self.tabs.analysis.analysis_status =
                                     AnalysisStatus::Loading;
@@ -1113,7 +1114,7 @@ impl App {
                                 self.pending_analysis = Some(AnalysisRequest::ExpressionVsAgeRegression {
                                     gene_ids: selected,
                                     gene_column: layout.gene_column,
-                                    age_columns: layout.age_columns,
+                                    age_columns,
                                 });
                                 self.tabs.analysis.analysis_status =
                                     AnalysisStatus::Loading;
@@ -1399,6 +1400,83 @@ impl App {
                                 self.tabs.analysis.analysis_status =
                                     AnalysisStatus::PendingConfirm { request: format!("Histogram: {} ({} bins)", col, bins) };
                             }
+                        }
+                    }
+                    '1' if avail.map(|v| v.available).unwrap_or(false) => {
+                        if let Some(layout) = self.active_layout() {
+                            self.pending_analysis = Some(AnalysisRequest::GenesVolcanoPlot {
+                                gene_column: layout.gene_column.clone(),
+                                age_columns: self.effective_age_columns(layout),
+                                gene_filter: None,
+                            });
+                            self.tabs.analysis.analysis_status =
+                                AnalysisStatus::PendingConfirm { request: "Volcano plot (significance vs effect size)".to_string() };
+                        }
+                    }
+                    't' if avail.map(|v| v.available).unwrap_or(false) => {
+                        if let Some(layout) = self.active_layout() {
+                            let genes: Vec<String> = self.selected_genes.as_ref()
+                                .map(|s| s.iter().cloned().collect())
+                                .unwrap_or_else(|| self.data_tab_gene_selector.as_ref()
+                                    .map(|g| g.genes.clone())
+                                    .unwrap_or_default());
+                            if !genes.is_empty() {
+                                self.tabs.viz.viz_output.clear();
+                                self.tabs.viz.viz_title.clear();
+                                self.tabs.viz.viz_svg_path = None;
+                                self.gene_selection = Some(GeneSelectionState {
+                                    genes,
+                                    selected: std::collections::HashSet::new(),
+                                    cursor: 0,
+                                    max_select: 5,
+                                    action: GeneSelectionAction::ExpressionTrend,
+                                    search_input: None,
+                                });
+                            }
+                        }
+                    }
+                    'v' if avail.map(|v| v.available).unwrap_or(false) => {
+                        if let Some(layout) = self.active_layout() {
+                            let (young_cols, old_cols) = self.age_groups.as_ref()
+                                .and_then(|g| {
+                                    let age_cols = self.effective_age_columns(layout);
+                                    let parts = crate::data::partition_ages_by_groups(&age_cols, g);
+                                    if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+                                        Some((Some(parts[0].clone()), Some(parts[1].clone())))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or((None, None));
+                            self.pending_analysis = Some(AnalysisRequest::YoungVsOld {
+                                gene_column: layout.gene_column.clone(),
+                                age_columns: self.effective_age_columns(layout),
+                                young_cols,
+                                old_cols,
+                            });
+                            self.tabs.analysis.analysis_status =
+                                AnalysisStatus::PendingConfirm { request: "Young vs Old scatter".to_string() };
+                        }
+                    }
+                    'e' if avail.map(|v| v.available).unwrap_or(false) => {
+                        if let Some(layout) = self.active_layout() {
+                            self.pending_analysis = Some(AnalysisRequest::ExpressionHeatmap {
+                                gene_column: layout.gene_column.clone(),
+                                age_columns: self.effective_age_columns(layout),
+                                top_n: 50,
+                            });
+                            self.tabs.analysis.analysis_status =
+                                AnalysisStatus::PendingConfirm { request: "Expression heatmap (genes × ages)".to_string() };
+                        }
+                    }
+                    'x' if avail.map(|v| v.available).unwrap_or(false) => {
+                        if let Some(layout) = self.active_layout() {
+                            self.pending_analysis = Some(AnalysisRequest::ExportGeneCorrelation {
+                                gene_column: layout.gene_column.clone(),
+                                age_columns: self.effective_age_columns(layout),
+                            });
+                            self.tabs.analysis.analysis_status =
+                                AnalysisStatus::PendingConfirm { request: "Export gene correlation to CSV".to_string() };
                         }
                     }
                     _ => {}

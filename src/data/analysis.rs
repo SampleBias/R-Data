@@ -305,7 +305,7 @@ pub struct AgeGroupBoxData {
     pub values: Vec<f64>,
 }
 
-/// Per-gene expression vs age: correlation, slope, p-value.
+/// Per-gene expression vs age: correlation, slope, p-value, fold-change.
 #[derive(Debug, Clone)]
 pub struct GeneAgeCorrelation {
     pub gene_id: String,
@@ -313,6 +313,7 @@ pub struct GeneAgeCorrelation {
     pub slope: f64,
     pub r_squared: f64,
     pub p_value: f64,
+    pub fold_change: f64, // (mean_old - mean_young) / mean_young
     pub significant: bool,
     pub direction: &'static str, // "positive" or "negative"
 }
@@ -516,12 +517,24 @@ impl StatisticalAnalyzer {
                 "negative"
             };
 
+            // Fold-change: split at median age, (mean_old - mean_young) / mean_young
+            let mid = x.len() / 2;
+            let (young_y, old_y) = y.split_at(mid);
+            let mean_young: f64 = young_y.iter().sum::<f64>() / young_y.len() as f64;
+            let mean_old: f64 = old_y.iter().sum::<f64>() / old_y.len() as f64;
+            let fold_change = if mean_young.abs() > 1e-10 {
+                (mean_old - mean_young) / mean_young
+            } else {
+                0.0
+            };
+
             result.push(GeneAgeCorrelation {
                 gene_id,
                 correlation,
                 slope,
                 r_squared,
                 p_value,
+                fold_change,
                 significant,
                 direction,
             });

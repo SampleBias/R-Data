@@ -13,6 +13,7 @@ pub enum VisualizationType {
     CorrelationBarChart,
     VolcanoPlot,
     ExpressionVsAgeRegression,
+    ExpressionHeatmap,
 }
 
 impl fmt::Display for VisualizationType {
@@ -29,6 +30,7 @@ impl fmt::Display for VisualizationType {
             VisualizationType::CorrelationBarChart => write!(f, "Top Genes by |Correlation|"),
             VisualizationType::VolcanoPlot => write!(f, "Volcano Plot"),
             VisualizationType::ExpressionVsAgeRegression => write!(f, "Expression vs Age (Regression)"),
+            VisualizationType::ExpressionHeatmap => write!(f, "Expression Heatmap (genes × ages)"),
         }
     }
 }
@@ -118,6 +120,14 @@ pub struct ExpressionVsAgeRegressionConfig {
     pub age_columns: Vec<String>,
 }
 
+/// Expression heatmap: genes × ages (z-scored expression).
+#[derive(Debug, Clone)]
+pub struct ExpressionHeatmapConfig {
+    pub gene_ids: Vec<String>,
+    pub gene_column: String,
+    pub age_columns: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum VisualizationConfig {
     Histogram(HistogramConfig),
@@ -131,6 +141,7 @@ pub enum VisualizationConfig {
     CorrelationBarChart(CorrelationBarChartConfig),
     VolcanoPlot(VolcanoPlotConfig),
     ExpressionVsAgeRegression(ExpressionVsAgeRegressionConfig),
+    ExpressionHeatmap(ExpressionHeatmapConfig),
 }
 
 #[derive(Debug, Clone)]

@@ -82,5 +82,55 @@ pub fn available_visualizations(
                 None
             },
         },
+        VizAvailability {
+            key: '1',
+            label: "Volcano plot (significance vs effect size)".to_string(),
+            available: has_layout,
+            reason: if !has_layout {
+                Some("need microarray layout".to_string())
+            } else {
+                None
+            },
+        },
+        VizAvailability {
+            key: 't',
+            label: "Expression trend (select 1–5 genes, expression vs age)".to_string(),
+            available: has_layout,
+            reason: if !has_layout {
+                Some("need microarray layout".to_string())
+            } else {
+                None
+            },
+        },
+        VizAvailability {
+            key: 'v',
+            label: "Young vs Old scatter (mean expression by age group)".to_string(),
+            available: has_layout,
+            reason: if !has_layout {
+                Some("need microarray layout".to_string())
+            } else {
+                None
+            },
+        },
+        VizAvailability {
+            key: 'e',
+            label: "Expression heatmap (genes × ages)".to_string(),
+            available: has_layout,
+            reason: if !has_layout {
+                Some("need microarray layout".to_string())
+            } else {
+                None
+            },
+        },
+        VizAvailability {
+            key: 'x',
+            label: "Export gene correlation to CSV".to_string(),
+            available: has_layout,
+            reason: if !has_layout {
+                Some("need microarray layout".to_string())
+            } else {
+                None
+            },
+        },
     ]
 }
