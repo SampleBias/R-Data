@@ -8,6 +8,7 @@ pub enum AnalysisRequest {
     SummaryStats {
         /// When present (microarray layout), include gene-age correlation summary (R², p-value, correlation).
         gene_age_summary: Option<(String, Vec<String>)>,
+        gene_filter: Option<std::collections::HashSet<String>>,
     },
     Correlation,
     Histogram { column: String, bins: usize },
@@ -34,24 +35,29 @@ pub enum AnalysisRequest {
     GenesExpressionVsAge {
         gene_column: String,
         age_columns: Vec<String>,
+        gene_filter: Option<std::collections::HashSet<String>>,
     },
     /// Genes statistically significant with age (p<0.05), positively or negatively correlated.
     GenesSignificantWithAge {
         gene_column: String,
         age_columns: Vec<String>,
+        gene_filter: Option<std::collections::HashSet<String>>,
     },
     GenesCorrelationScatter {
         gene_column: String,
         age_columns: Vec<String>,
+        gene_filter: Option<std::collections::HashSet<String>>,
     },
     GenesCorrelationBarChart {
         gene_column: String,
         age_columns: Vec<String>,
         top_n: usize,
+        gene_filter: Option<std::collections::HashSet<String>>,
     },
     GenesVolcanoPlot {
         gene_column: String,
         age_columns: Vec<String>,
+        gene_filter: Option<std::collections::HashSet<String>>,
     },
     /// Expression vs age regression for 1–5 selected genes.
     ExpressionVsAgeRegression {
@@ -76,13 +82,13 @@ impl AnalysisRunner {
         request: AnalysisRequest,
     ) -> Result<AnalysisResult> {
         match request {
-            AnalysisRequest::SummaryStats { gene_age_summary } => {
+            AnalysisRequest::SummaryStats { gene_age_summary, gene_filter } => {
                 let stats = DataLoader::get_summary_stats(df)?;
                 let mut details = format!("{}", stats);
                 if let Some((gene_column, age_columns)) = gene_age_summary {
                     let results =
                         crate::data::StatisticalAnalyzer::genes_expression_vs_age(
-                            df, &gene_column, &age_columns,
+                            df, &gene_column, &age_columns, gene_filter.as_ref(),
                         )?;
                     let n = results.len();
                     let mean_corr = results.iter().map(|r| r.correlation).sum::<f64>() / n.max(1) as f64;
@@ -319,10 +325,11 @@ impl AnalysisRunner {
             AnalysisRequest::GenesExpressionVsAge {
                 gene_column,
                 age_columns,
+                gene_filter,
             } => {
                 let results =
                     crate::data::StatisticalAnalyzer::genes_expression_vs_age(
-                        df, &gene_column, &age_columns,
+                        df, &gene_column, &age_columns, gene_filter.as_ref(),
                     )?;
                 let mut sorted = results.clone();
                 sorted.sort_by(|a, b| a.p_value.partial_cmp(&b.p_value).unwrap());
@@ -350,10 +357,11 @@ impl AnalysisRunner {
             AnalysisRequest::GenesSignificantWithAge {
                 gene_column,
                 age_columns,
+                gene_filter,
             } => {
                 let results =
                     crate::data::StatisticalAnalyzer::genes_expression_vs_age(
-                        df, &gene_column, &age_columns,
+                        df, &gene_column, &age_columns, gene_filter.as_ref(),
                     )?;
                 let mut significant: Vec<_> = results.into_iter().filter(|r| r.significant).collect();
                 significant.sort_by(|a, b| a.p_value.partial_cmp(&b.p_value).unwrap());
@@ -383,10 +391,11 @@ impl AnalysisRunner {
             AnalysisRequest::GenesCorrelationScatter {
                 gene_column,
                 age_columns,
+                gene_filter,
             } => {
                 let results =
                     crate::data::StatisticalAnalyzer::genes_expression_vs_age(
-                        df, &gene_column, &age_columns,
+                        df, &gene_column, &age_columns, gene_filter.as_ref(),
                     )?;
                 let mut sorted = results.clone();
                 sorted.sort_by(|a, b| a.p_value.partial_cmp(&b.p_value).unwrap());
@@ -404,10 +413,11 @@ impl AnalysisRunner {
                 gene_column,
                 age_columns,
                 top_n,
+                gene_filter,
             } => {
                 let results =
                     crate::data::StatisticalAnalyzer::genes_expression_vs_age(
-                        df, &gene_column, &age_columns,
+                        df, &gene_column, &age_columns, gene_filter.as_ref(),
                     )?;
                 let mut sorted = results.clone();
                 sorted.sort_by(|a, b| a.correlation.abs().partial_cmp(&b.correlation.abs()).unwrap());
@@ -425,10 +435,11 @@ impl AnalysisRunner {
             AnalysisRequest::GenesVolcanoPlot {
                 gene_column,
                 age_columns,
+                gene_filter,
             } => {
                 let results =
                     crate::data::StatisticalAnalyzer::genes_expression_vs_age(
-                        df, &gene_column, &age_columns,
+                        df, &gene_column, &age_columns, gene_filter.as_ref(),
                     )?;
                 let mut sorted = results.clone();
                 sorted.sort_by(|a, b| a.p_value.partial_cmp(&b.p_value).unwrap());

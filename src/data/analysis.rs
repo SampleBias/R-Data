@@ -468,10 +468,12 @@ impl StatisticalAnalyzer {
 
     /// Per-gene expression vs age: correlation, slope, p-value. Identifies genes
     /// statistically significant with age (positively or negatively correlated).
+    /// When gene_filter is Some, only process genes in the set.
     pub fn genes_expression_vs_age(
         df: &DataFrame,
         gene_column: &str,
         age_columns: &[String],
+        gene_filter: Option<&std::collections::HashSet<String>>,
     ) -> Result<Vec<GeneAgeCorrelation>> {
         let gene_series = df.column(gene_column)?.str()?;
         let n_rows = df.height();
@@ -479,6 +481,11 @@ impl StatisticalAnalyzer {
 
         for row in 0..n_rows {
             let gene_id = gene_series.get(row).unwrap_or("").to_string();
+            if let Some(filter) = gene_filter {
+                if !filter.contains(&gene_id) {
+                    continue;
+                }
+            }
             let mut x = Vec::new();
             let mut y = Vec::new();
             for col_name in age_columns {

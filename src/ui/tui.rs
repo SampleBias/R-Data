@@ -35,6 +35,8 @@ pub struct App {
     active_dataset_index: usize,
     /// Selected age columns (when Some, use these; else use all from layout).
     selected_age_columns: Option<std::collections::HashSet<String>>,
+    /// Selected genes (when Some, use these; else use all genes).
+    selected_genes: Option<std::collections::HashSet<String>>,
     /// User-defined age groups for Young vs Old, e.g. Young=17-30, Old=40-60.
     age_groups: Option<Vec<crate::data::AgeGroupDef>>,
     should_quit: bool,
@@ -42,6 +44,7 @@ pub struct App {
     file_dialog_state: FileDialogState,
     gene_selection: Option<GeneSelectionState>,
     data_tab_age_selector: Option<DataTabAgeSelectorState>,
+    data_tab_gene_selector: Option<DataTabGeneSelectorState>,
     data_tab_focus: DataTabFocus,
     age_group_input: Option<String>,
     pending_analysis: Option<AnalysisRequest>,
@@ -76,11 +79,12 @@ struct GeneSelectionState {
     search_input: Option<String>,
 }
 
-/// Focus on Data tab: TabBar (tabs at top) or AgeSelector (age range field).
+/// Focus on Data tab: TabBar (tabs at top), AgeSelector, or GeneSelector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DataTabFocus {
     TabBar,
     AgeSelector,
+    GeneSelector,
 }
 
 /// Age selector embedded on Data tab: only available ages from layout, [x]:17 format.
@@ -88,6 +92,14 @@ enum DataTabFocus {
 struct DataTabAgeSelectorState {
     ages: Vec<String>,
     cursor: usize,
+}
+
+/// Gene selector embedded on Data tab: genes from layout, [x]:ENSG... format. Scrollable list.
+#[derive(Debug, Clone)]
+struct DataTabGeneSelectorState {
+    genes: Vec<String>,
+    cursor: usize,
+    scroll_offset: usize,
 }
 
 #[allow(dead_code)]
@@ -122,6 +134,10 @@ impl App {
         }
     }
 
+    fn effective_genes(&self) -> Option<std::collections::HashSet<String>> {
+        self.selected_genes.clone()
+    }
+
     pub fn new(config: Config) -> Result<Self> {
         let viz_engine = VisualizationEngine::new(config.viz_width, config.viz_height);
         Ok(Self {
@@ -130,6 +146,8 @@ impl App {
             datasets: Vec::new(),
             active_dataset_index: 0,
             selected_age_columns: None,
+            selected_genes: None,
+            data_tab_gene_selector: None,
             age_groups: None,
             should_quit: false,
             input_mode: InputMode::Normal,
@@ -263,7 +281,7 @@ impl App {
                 "Microarray: log-normalised expression, Gene ID (col A) × age (cols B+).",
                 "One value per gene (highest probe when multiple map to same gene).",
                 "",
-                "Press Enter to load • Esc to cancel",
+                "Type or paste path • Enter to load • Esc to cancel",
             ];
             Paragraph::new(instructions.join("\n"))
                 .block(Block::default().borders(Borders::ALL).title(" Load File "))
@@ -285,8 +303,20 @@ impl App {
                 .render(load_chunks[2], f.buffer_mut());
         } else {
             let has_age_selector = self.data_tab_age_selector.is_some();
+            let has_gene_selector = self.data_tab_gene_selector.is_some();
             let has_datasets = !self.datasets.is_empty();
-            let constraints: &[Constraint] = if has_datasets && has_age_selector {
+            let constraints: &[Constraint] = if has_datasets && has_age_selector && has_gene_selector {
+                &[
+                    Constraint::Length(3),
+                    Constraint::Length(4),
+                    Constraint::Length(3),
+                    Constraint::Length(8),
+                    Constraint::Length(8),
+                    Constraint::Length(10),
+                    Constraint::Length(12),
+                    Constraint::Min(0),
+                ]
+            } else if has_datasets && (has_age_selector || has_gene_selector) {
                 &[
                     Constraint::Length(3),
                     Constraint::Length(4),
@@ -305,7 +335,7 @@ impl App {
                     Constraint::Length(10),
                     Constraint::Min(0),
                 ]
-            } else if has_age_selector {
+            } else if has_age_selector || has_gene_selector {
                 &[
                     Constraint::Length(3),
                     Constraint::Length(4),
@@ -361,13 +391,15 @@ impl App {
                 self.render_datasets_list(f, chunks[chunk_idx]);
                 chunk_idx += 1;
             }
-            let bottom_area = if has_age_selector {
+            if has_age_selector {
                 self.render_data_tab_age_selector(f, chunks[chunk_idx]);
                 chunk_idx += 1;
-                chunks[chunk_idx]
-            } else {
-                chunks[chunk_idx]
-            };
+            }
+            if has_gene_selector {
+                self.render_data_tab_gene_selector(f, chunks[chunk_idx]);
+                chunk_idx += 1;
+            }
+            let bottom_area = chunks[chunk_idx];
 
             let info_chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -595,6 +627,55 @@ impl App {
         para.render(inner, f.buffer_mut());
     }
 
+    fn render_data_tab_gene_selector(&self, f: &mut Frame, area: Rect) {
+        let Some(ref state) = self.data_tab_gene_selector else { return };
+        let all_selected = self.selected_genes.is_none();
+        let sel = self.selected_genes.as_ref();
+        let is_selected = |gene: &str| {
+            if all_selected {
+                true
+            } else if let Some(s) = sel {
+                s.contains(gene)
+            } else {
+                true
+            }
+        };
+        let visible_height = area.height.saturating_sub(2) as usize;
+        let start = state.scroll_offset.min(state.genes.len().saturating_sub(1));
+        let end = (start + visible_height).min(state.genes.len());
+        let hint = if self.data_tab_focus == DataTabFocus::GeneSelector {
+            "Tab, ↑ or Esc to return • j/k to move • X to toggle • All selected = no filter"
+        } else {
+            "↓ to enter gene selection • Tab switches Data/Analysis/Viz"
+        };
+        let mut items = vec![ListItem::new(ratatui::text::Line::from(hint))];
+        for (i, gene) in state.genes[start..end].iter().enumerate() {
+            let idx = start + i;
+            let mark = if is_selected(gene) { "x" } else { " " };
+            let is_cursor = idx == state.cursor && self.data_tab_focus == DataTabFocus::GeneSelector;
+            let display = format!("[{}] {} ", mark, gene.chars().take(28).collect::<String>());
+            let style = if is_cursor {
+                Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else if is_selected(gene) {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            items.push(ListItem::new(display).style(style));
+        }
+        let n_sel = if all_selected {
+            state.genes.len()
+        } else {
+            sel.map(|s| s.len()).unwrap_or(0)
+        };
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Gene Selection (affects all analyses) — {} of {} selected ", n_sel, state.genes.len())),
+        );
+        Widget::render(list, area, f.buffer_mut());
+    }
+
     fn render_age_group_input(&self, f: &mut Frame, area: Rect) {
         let input = self.age_group_input.as_deref().unwrap_or("");
         let instructions = vec![
@@ -620,6 +701,15 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) -> Result<()> {
+        // Paste into file path input when loading file(s)
+        if matches!(self.file_dialog_state, FileDialogState::AwaitingPath) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                self.tabs.data.file_path_input.push_str(trimmed);
+            }
+            return Ok(());
+        }
+        // Paste gene ID when in gene selection
         if let Some(ref mut state) = self.gene_selection {
             let query = text.trim();
             if !query.is_empty() {
@@ -658,14 +748,19 @@ impl App {
         }
 
         if self.tabs.active == Tab::Data
-            && self.data_tab_age_selector.is_some()
+            && (self.data_tab_age_selector.is_some() || self.data_tab_gene_selector.is_some())
             && !matches!(self.file_dialog_state, FileDialogState::AwaitingPath)
         {
             let has_age_selector = self.data_tab_age_selector.is_some();
+            let has_gene_selector = self.data_tab_gene_selector.is_some();
 
             if self.data_tab_focus == DataTabFocus::TabBar {
                 if has_age_selector && key.code == KeyCode::Down {
                     self.data_tab_focus = DataTabFocus::AgeSelector;
+                    return Ok(());
+                }
+                if has_gene_selector && !has_age_selector && key.code == KeyCode::Down {
+                    self.data_tab_focus = DataTabFocus::GeneSelector;
                     return Ok(());
                 }
             }
@@ -673,6 +768,10 @@ impl App {
             if self.data_tab_focus == DataTabFocus::AgeSelector {
                 if key.code == KeyCode::Tab || key.code == KeyCode::Up || key.code == KeyCode::Esc {
                     self.data_tab_focus = DataTabFocus::TabBar;
+                    return Ok(());
+                }
+                if key.code == KeyCode::Down && has_gene_selector {
+                    self.data_tab_focus = DataTabFocus::GeneSelector;
                     return Ok(());
                 }
                 if let Some(ref mut state) = self.data_tab_age_selector {
@@ -710,6 +809,74 @@ impl App {
                                             new_sel.insert(age.clone());
                                         }
                                         self.selected_age_columns = if new_sel == all_ages {
+                                            None
+                                        } else {
+                                            Some(new_sel)
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                        _ => consumed = false,
+                    }
+                    if consumed {
+                        return Ok(());
+                    }
+                }
+            }
+
+            if self.data_tab_focus == DataTabFocus::GeneSelector {
+                if key.code == KeyCode::Tab || key.code == KeyCode::Esc {
+                    self.data_tab_focus = if has_age_selector {
+                        DataTabFocus::AgeSelector
+                    } else {
+                        DataTabFocus::TabBar
+                    };
+                    return Ok(());
+                }
+                if key.code == KeyCode::Up {
+                    self.data_tab_focus = if has_age_selector {
+                        DataTabFocus::AgeSelector
+                    } else {
+                        DataTabFocus::TabBar
+                    };
+                    return Ok(());
+                }
+                if let Some(ref mut state) = self.data_tab_gene_selector {
+                    let len = state.genes.len();
+                    let visible_height = 12usize; // approximate for scroll
+                    let mut consumed = true;
+                    match key.code {
+                        KeyCode::Char('k') => {
+                            state.cursor = state.cursor.saturating_sub(1);
+                            if state.cursor < state.scroll_offset {
+                                state.scroll_offset = state.cursor;
+                            }
+                        }
+                        KeyCode::Char('j') => {
+                            state.cursor = (state.cursor + 1).min(len.saturating_sub(1));
+                            if state.cursor >= state.scroll_offset + visible_height {
+                                state.scroll_offset = state.cursor - visible_height + 1;
+                            }
+                        }
+                        KeyCode::Char('x') | KeyCode::Char('X') => {
+                            if let Some(gene) = state.genes.get(state.cursor).cloned() {
+                                let all_genes: std::collections::HashSet<String> =
+                                    state.genes.iter().cloned().collect();
+                                match &self.selected_genes {
+                                    None => {
+                                        let mut new_sel = all_genes.clone();
+                                        new_sel.remove(&gene);
+                                        self.selected_genes = Some(new_sel);
+                                    }
+                                    Some(s) => {
+                                        let mut new_sel = s.clone();
+                                        if new_sel.contains(&gene) {
+                                            new_sel.remove(&gene);
+                                        } else {
+                                            new_sel.insert(gene.clone());
+                                        }
+                                        self.selected_genes = if new_sel == all_genes {
                                             None
                                         } else {
                                             Some(new_sel)
@@ -884,7 +1051,13 @@ impl App {
                     let path = self.datasets[idx].path.clone();
                     let info = self.datasets[idx].dataframe_info.clone();
                     let preview = self.datasets[idx].preview_data.clone();
-                    let ages = self.datasets[idx].layout.as_ref().map(|l| l.age_columns.clone());
+                    let layout = self.datasets[idx].layout.as_ref();
+                    let ages = layout.map(|l| l.age_columns.clone());
+                    let genes = layout.and_then(|l| {
+                        self.datasets[idx].dataframe.column(&l.gene_column).ok()
+                            .and_then(|c| c.str().ok())
+                            .map(|s| s.into_iter().filter_map(|o| o.map(str::to_string)).collect::<Vec<_>>())
+                    });
                     self.active_dataset_index = idx;
                     self.tabs.data.file_path = path;
                     self.tabs.data.dataframe_info = info;
@@ -893,6 +1066,12 @@ impl App {
                         ages: a,
                         cursor: 0,
                     });
+                    self.data_tab_gene_selector = genes.map(|g| DataTabGeneSelectorState {
+                        genes: g,
+                        cursor: 0,
+                        scroll_offset: 0,
+                    });
+                    self.selected_genes = None; // reset when switching datasets
                 }
             }
             KeyCode::Char('l') | KeyCode::Char('L') if self.tabs.active == Tab::Data && self.input_mode == InputMode::Normal => {
@@ -961,7 +1140,13 @@ impl App {
                         let path = self.datasets[idx].path.clone();
                         let info = self.datasets[idx].dataframe_info.clone();
                         let preview = self.datasets[idx].preview_data.clone();
-                        let ages = self.datasets[idx].layout.as_ref().map(|l| l.age_columns.clone());
+                        let layout = self.datasets[idx].layout.as_ref();
+                        let ages = layout.map(|l| l.age_columns.clone());
+                        let genes = layout.and_then(|l| {
+                            self.datasets[idx].dataframe.column(&l.gene_column).ok()
+                                .and_then(|c| c.str().ok())
+                                .map(|s| s.into_iter().filter_map(|o| o.map(str::to_string)).collect::<Vec<_>>())
+                        });
                         self.tabs.data.file_path = path;
                         self.tabs.data.dataframe_info = info;
                         self.tabs.data.preview_data = preview;
@@ -975,6 +1160,12 @@ impl App {
                             ages: a,
                             cursor: 0,
                         });
+                        self.data_tab_gene_selector = genes.map(|g| DataTabGeneSelectorState {
+                            genes: g,
+                            cursor: 0,
+                            scroll_offset: 0,
+                        });
+                        self.selected_genes = None;
                     } else {
                         self.tabs.data.load_status = LoadStatus::Error(
                             errors.first().cloned().unwrap_or_else(|| "Failed to load".to_string())
@@ -1023,6 +1214,7 @@ impl App {
                         });
                         self.pending_analysis = Some(AnalysisRequest::SummaryStats {
                             gene_age_summary: gene_age,
+                            gene_filter: self.effective_genes(),
                         });
                         self.tabs.analysis.analysis_status =
                             AnalysisStatus::PendingConfirm { request: "Summary statistics (mean, median, mode, R², p-value, correlation)".to_string() };
@@ -1032,6 +1224,7 @@ impl App {
                             self.pending_analysis = Some(AnalysisRequest::GenesExpressionVsAge {
                                 gene_column: layout.gene_column.clone(),
                                 age_columns: self.effective_age_columns(layout),
+                                gene_filter: self.effective_genes(),
                             });
                             self.tabs.analysis.analysis_status =
                                 AnalysisStatus::PendingConfirm { request: "Expression vs age (all genes)".to_string() };
@@ -1058,6 +1251,7 @@ impl App {
                             self.pending_analysis = Some(AnalysisRequest::GenesSignificantWithAge {
                                 gene_column: layout.gene_column.clone(),
                                 age_columns: self.effective_age_columns(layout),
+                                gene_filter: self.effective_genes(),
                             });
                             self.tabs.analysis.analysis_status =
                                 AnalysisStatus::PendingConfirm { request: "Gene correlation with aging (positive/negative, p<0.05)".to_string() };
