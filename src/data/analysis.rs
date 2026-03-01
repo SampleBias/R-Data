@@ -357,26 +357,13 @@ impl StatisticalAnalyzer {
         Ok(result)
     }
 
-    /// Mean expression Young vs Old across genes. Splits ages at median.
-    pub fn young_vs_old(
+    /// Mean expression Young vs Old across genes. Uses explicit young/old column lists.
+    pub fn young_vs_old_with_groups(
         df: &DataFrame,
         gene_column: &str,
-        age_columns: &[String],
+        young_cols: &[String],
+        old_cols: &[String],
     ) -> Result<Vec<YoungVsOldPoint>> {
-        let ages: Vec<i64> = age_columns
-            .iter()
-            .filter_map(|s| s.trim().parse().ok())
-            .collect();
-        if ages.is_empty() {
-            return Err(anyhow::anyhow!("No valid age columns"));
-        }
-        let mut sorted = ages.clone();
-        sorted.sort();
-        let median_age = sorted[sorted.len() / 2];
-        let (young_cols, old_cols): (Vec<_>, Vec<_>) = age_columns
-            .iter()
-            .partition(|s| s.trim().parse::<i64>().unwrap_or(0) < median_age);
-
         if young_cols.is_empty() || old_cols.is_empty() {
             return Err(anyhow::anyhow!("Need both young and old age groups"));
         }
@@ -389,7 +376,7 @@ impl StatisticalAnalyzer {
             let gene_id = gene_series.get(row).unwrap_or("").to_string();
             let mut sum_young = 0.0;
             let mut cnt_young = 0usize;
-            for c in &young_cols {
+            for c in young_cols {
                 if let Ok(col) = df.column(c) {
                     if let Ok(f64_col) = col.f64() {
                         if let Some(v) = f64_col.get(row) {
@@ -407,7 +394,7 @@ impl StatisticalAnalyzer {
 
             let mut sum_old = 0.0;
             let mut cnt_old = 0usize;
-            for c in &old_cols {
+            for c in old_cols {
                 if let Ok(col) = df.column(c) {
                     if let Ok(f64_col) = col.f64() {
                         if let Some(v) = f64_col.get(row) {
@@ -430,6 +417,35 @@ impl StatisticalAnalyzer {
             });
         }
         Ok(result)
+    }
+
+    /// Mean expression Young vs Old across genes. Splits ages at median.
+    pub fn young_vs_old(
+        df: &DataFrame,
+        gene_column: &str,
+        age_columns: &[String],
+    ) -> Result<Vec<YoungVsOldPoint>> {
+        let ages: Vec<i64> = age_columns
+            .iter()
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        if ages.is_empty() {
+            return Err(anyhow::anyhow!("No valid age columns"));
+        }
+        let mut sorted = ages.clone();
+        sorted.sort();
+        let median_age = sorted[sorted.len() / 2];
+        let young_cols: Vec<String> = age_columns
+            .iter()
+            .filter(|s| s.trim().parse::<i64>().unwrap_or(0) < median_age)
+            .cloned()
+            .collect();
+        let old_cols: Vec<String> = age_columns
+            .iter()
+            .filter(|s| s.trim().parse::<i64>().unwrap_or(0) >= median_age)
+            .cloned()
+            .collect();
+        Self::young_vs_old_with_groups(df, gene_column, &young_cols, &old_cols)
     }
 
     /// Box plot by age: one box per age column, values = expression across genes.

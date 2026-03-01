@@ -627,11 +627,20 @@ impl VisualizationEngine {
     }
 
     fn render_young_vs_old(&self, df: &DataFrame, config: &YoungVsOldConfig) -> Result<ChartData> {
-        let points = StatisticalAnalyzer::young_vs_old(
-            df,
-            &config.gene_column,
-            &config.age_columns,
-        )?;
+        let points = if !config.young_ages.is_empty() && !config.old_ages.is_empty() {
+            StatisticalAnalyzer::young_vs_old_with_groups(
+                df,
+                &config.gene_column,
+                &config.young_ages,
+                &config.old_ages,
+            )?
+        } else {
+            StatisticalAnalyzer::young_vs_old(
+                df,
+                &config.gene_column,
+                &config.age_columns,
+            )?
+        };
         if points.is_empty() {
             return Ok(ChartData {
                 chart_type: VisualizationType::YoungVsOldScatter,

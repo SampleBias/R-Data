@@ -176,6 +176,69 @@ pub struct DataLayout {
     pub age_max: i64,
 }
 
+/// User-defined age groups for Young vs Old etc. (name, min_age, max_age) inclusive.
+#[derive(Debug, Clone)]
+pub struct AgeGroupDef {
+    pub name: String,
+    pub min_age: i64,
+    pub max_age: i64,
+}
+
+/// Parse "17-30,40-60" into [(Young,17,30),(Old,40,60)]. Returns (young, old) for 2 groups.
+pub fn parse_age_groups(s: &str) -> Option<Vec<AgeGroupDef>> {
+    let mut groups = Vec::new();
+    for part in s.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (name, range) = if part.contains('=') {
+            let mut split = part.splitn(2, '=');
+            let name = split.next()?.trim().to_string();
+            let range = split.next()?.trim();
+            (name, range)
+        } else {
+            (format!("Group{}", groups.len() + 1), part)
+        };
+        let (min_s, max_s) = if range.contains('-') {
+            let mut split = range.splitn(2, '-');
+            (split.next()?.trim(), split.next()?.trim())
+        } else {
+            (range, range)
+        };
+        let min_age: i64 = min_s.parse().ok()?;
+        let max_age: i64 = max_s.parse().ok()?;
+        groups.push(AgeGroupDef {
+            name,
+            min_age: min_age.min(max_age),
+            max_age: min_age.max(max_age),
+        });
+    }
+    if groups.len() >= 2 {
+        Some(groups)
+    } else {
+        None
+    }
+}
+
+/// Partition age columns by group definitions.
+pub fn partition_ages_by_groups(
+    age_columns: &[String],
+    groups: &[AgeGroupDef],
+) -> Vec<Vec<String>> {
+    let mut result: Vec<Vec<String>> = groups.iter().map(|_| Vec::new()).collect();
+    for col in age_columns {
+        let age: i64 = col.trim().parse().unwrap_or(i64::MIN);
+        for (i, g) in groups.iter().enumerate() {
+            if (g.min_age..=g.max_age).contains(&age) {
+                result[i].push(col.clone());
+                break;
+            }
+        }
+    }
+    result
+}
+
 impl DataLayout {
     /// Detect microarray layout from a DataFrame.
     /// Expects: column 0 = "Gene ID" (or similar), columns 1+ = age headers (17, 18, 21, ...).

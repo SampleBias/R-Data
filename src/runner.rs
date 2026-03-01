@@ -20,6 +20,8 @@ pub enum AnalysisRequest {
     YoungVsOld {
         gene_column: String,
         age_columns: Vec<String>,
+        young_cols: Option<Vec<String>>,
+        old_cols: Option<Vec<String>>,
     },
     AgeGroupBoxPlot {
         gene_column: String,
@@ -217,32 +219,43 @@ impl AnalysisRunner {
             AnalysisRequest::YoungVsOld {
                 gene_column,
                 age_columns,
+                young_cols,
+                old_cols,
             } => {
-                let points =
-                    crate::data::StatisticalAnalyzer::young_vs_old(
-                        df, &gene_column, &age_columns,
-                    )?;
-                let ages: Vec<i64> = age_columns
-                    .iter()
-                    .filter_map(|s| s.trim().parse().ok())
-                    .collect();
-                let mut sorted = ages.clone();
-                sorted.sort();
-                let median = sorted[sorted.len() / 2];
-                let young_ages: Vec<String> = age_columns
-                    .iter()
-                    .filter(|s| s.trim().parse::<i64>().unwrap_or(0) < median)
-                    .cloned()
-                    .collect();
-                let old_ages: Vec<String> = age_columns
-                    .iter()
-                    .filter(|s| s.trim().parse::<i64>().unwrap_or(0) >= median)
-                    .cloned()
-                    .collect();
+                let (points, young_ages, old_ages) = match (young_cols.as_ref(), old_cols.as_ref()) {
+                    (Some(young), Some(old)) => {
+                        let pts = crate::data::StatisticalAnalyzer::young_vs_old_with_groups(
+                            df, &gene_column, young, old,
+                        )?;
+                        (pts, young.clone(), old.clone())
+                    }
+                    _ => {
+                        let pts = crate::data::StatisticalAnalyzer::young_vs_old(
+                            df, &gene_column, &age_columns,
+                        )?;
+                        let ages: Vec<i64> = age_columns
+                            .iter()
+                            .filter_map(|s| s.trim().parse().ok())
+                            .collect();
+                        let mut sorted = ages.clone();
+                        sorted.sort();
+                        let median = sorted[sorted.len() / 2];
+                        let ya: Vec<String> = age_columns
+                            .iter()
+                            .filter(|s| s.trim().parse::<i64>().unwrap_or(0) < median)
+                            .cloned()
+                            .collect();
+                        let oa: Vec<String> = age_columns
+                            .iter()
+                            .filter(|s| s.trim().parse::<i64>().unwrap_or(0) >= median)
+                            .cloned()
+                            .collect();
+                        (pts, ya, oa)
+                    }
+                };
                 let summary = format!(
-                    "Young vs Old scatter: {} genes (split at age {})",
-                    points.len(),
-                    median
+                    "Young vs Old scatter: {} genes",
+                    points.len()
                 );
                 Ok(AnalysisResult {
                     summary: summary.clone(),
