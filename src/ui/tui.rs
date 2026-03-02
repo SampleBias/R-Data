@@ -696,7 +696,7 @@ impl App {
                 String::new()
             };
             let chat_title = match self.tabs.agent.focus {
-                AgentFocus::Chat => format!(" Agent │ ↑/↓ page │ Esc: back {}", page_info),
+                AgentFocus::Chat => format!(" Agent │ ↑/↓ scroll │ PgUp/PgDn page │ Esc: back {}", page_info),
                 AgentFocus::Input => " Agent │ Esc: scroll chat ".to_string(),
             };
             let chat_block = Block::default()
@@ -964,14 +964,26 @@ impl App {
                     self.tabs.agent.focus = AgentFocus::Input;
                     return Ok(());
                 }
-                (AgentFocus::Chat, KeyCode::Up | KeyCode::PageUp) => {
-                    // Previous page (older content)
+                (AgentFocus::Chat, KeyCode::Up) => {
+                    // Scroll up one line (older content)
+                    self.tabs.agent.scroll_offset =
+                        (self.tabs.agent.scroll_offset + 1).min(max_scroll);
+                    return Ok(());
+                }
+                (AgentFocus::Chat, KeyCode::Down) => {
+                    // Scroll down one line (newer content)
+                    self.tabs.agent.scroll_offset =
+                        self.tabs.agent.scroll_offset.saturating_sub(1);
+                    return Ok(());
+                }
+                (AgentFocus::Chat, KeyCode::PageUp) => {
+                    // Scroll up one page
                     self.tabs.agent.scroll_offset =
                         (self.tabs.agent.scroll_offset + page_size).min(max_scroll);
                     return Ok(());
                 }
-                (AgentFocus::Chat, KeyCode::Down | KeyCode::PageDown) => {
-                    // Next page (newer content)
+                (AgentFocus::Chat, KeyCode::PageDown) => {
+                    // Scroll down one page
                     self.tabs.agent.scroll_offset =
                         self.tabs.agent.scroll_offset.saturating_sub(page_size);
                     return Ok(());
