@@ -1626,10 +1626,10 @@ impl App {
                                 .find(|c| c.dtype().is_numeric())
                                 .map(|c| c.name().to_string())
                             {
-                                let bins = ConfigManager::load_config().map(|c| c.default_bins).unwrap_or(20);
+                                let bins: u32 = ConfigManager::load_config().map(|c| c.default_bins).unwrap_or(20);
                                 self.pending_analysis = Some(AnalysisRequest::Histogram {
                                     column: col.clone(),
-                                    bins,
+                                    bins: bins.try_into().unwrap(),
                                 });
                                 self.tabs.analysis.analysis_status =
                                     AnalysisStatus::PendingConfirm { request: format!("Histogram: {} ({} bins)", col, bins) };
