@@ -1,0 +1,3 @@
+[submodule "R-Data"]
+	path = R-Data
+	url = https://github.com/SampleBias/R-Data.git
