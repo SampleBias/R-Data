@@ -1,2 +1,12 @@
 # API keys and sensitive data
 .env
+.env.*
+!.env.example
+
+# Build artifacts and temp files
+*.rs.new
+.crush/
+
+# OS files
+.DS_Store
+Thumbs.db
